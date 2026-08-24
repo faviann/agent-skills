@@ -83,7 +83,7 @@ output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" FAVIANN_SKIL
 [[ "$(jq -r .url <<<"$output")" == http://localhost:8080/two/* ]] || fail 'base URL was not reread'
 
 scenario 'missing selected and invalid present configurations fail as configuration errors'
-for kind in missing malformed incomplete relative-root missing-root query-url fragment-url space-url empty-host invalid-authority ftp-url unreadable; do
+for kind in missing malformed incomplete relative-root missing-root query-url fragment-url space-url empty-host invalid-authority malformed-bracket ftp-url unreadable; do
   bad="$FIXTURE_ROOT/config-$kind.json"
   case "$kind" in
     missing) ;;
@@ -96,6 +96,7 @@ for kind in missing malformed incomplete relative-root missing-root query-url fr
     space-url) write_config "$bad" "$publish_root" 'https://example.test/not encoded' ;;
     empty-host) write_config "$bad" "$publish_root" 'https://:443/base' ;;
     invalid-authority) write_config "$bad" "$publish_root" 'https://user@@example.test/base' ;;
+    malformed-bracket) write_config "$bad" "$publish_root" 'https://[::::]/base' ;;
     ftp-url) write_config "$bad" "$publish_root" 'ftp://example.test/x' ;;
     unreadable) write_config "$bad" "$publish_root" 'https://example.test'; chmod 000 "$bad" ;;
   esac
@@ -125,6 +126,34 @@ if [[ -x /usr/bin/jq || -x /bin/jq ]]; then
 else
   [[ "$status" -ne 0 ]] || fail 'configured publication without jq succeeded'; assert_error dependency "$output"
 fi
+
+scenario 'a present but broken jq emits one stable dependency result'
+broken_jq_bin="$FIXTURE_ROOT/broken-jq-bin"; mkdir "$broken_jq_bin"
+printf '#!/usr/bin/env bash\nexit 76\n' > "$broken_jq_bin/jq"; chmod +x "$broken_jq_bin/jq"
+set +e
+output="$(cd "$repo" && PATH="$broken_jq_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" \
+  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+set -e
+[[ "$status" -ne 0 ]] || fail 'configured publication with broken jq succeeded'
+assert_error dependency "$output"
+[[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'broken jq did not emit exactly one JSON line'
+
+scenario 'jq failure while serializing an error uses the dependency fallback'
+serializer_jq_bin="$FIXTURE_ROOT/serializer-jq-bin"; mkdir "$serializer_jq_bin"
+real_jq="$(command -v jq)"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'for argument in "$@"; do [[ "$argument" == category ]] && exit 77; done' \
+  "exec $(printf '%q' "$real_jq") \"\$@\"" > "$serializer_jq_bin/jq"
+chmod +x "$serializer_jq_bin/jq"
+set +e
+output="$(cd "$repo" && PATH="$serializer_jq_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$FIXTURE_ROOT/config-empty-host.json" \
+  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+set -e
+[[ "$status" -ne 0 ]] || fail 'error serialization with failed jq succeeded'
+assert_error dependency "$output"
+[[ "$(jq -r .message <<<"$output")" == 'jq failed while serializing an error result' ]] \
+  || fail "serializer fallback message changed: $output"
+[[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'serializer fallback did not emit exactly one JSON line'
 
 scenario 'a host without Bash receives a dependency result'
 empty_path="$FIXTURE_ROOT/empty-path"; mkdir "$empty_path"

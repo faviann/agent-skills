@@ -52,17 +52,28 @@ fi
 
 command -v jq >/dev/null 2>&1 \
   || fixed_error dependency 'jq is required when artifact publication is configured' 4
+if ! jq_probe="$(jq -cn 'true' 2>/dev/null)" || [[ "$jq_probe" != true ]]; then
+  fixed_error dependency 'jq is present but not operational' 4
+fi
 
 json_error() {
-  local category="$1" message="$2" code="$3" residual="${4:-}"
+  local category="$1" message="$2" code="$3" residual="${4:-}" serialized
   if [[ -n "$residual" ]]; then
-    jq -cn --arg category "$category" --arg message "$message" --arg residualPath "$residual" \
-      '{status:"error",category:$category,message:$message,residualPath:$residualPath}'
+    if serialized="$(jq -cn --arg category "$category" --arg message "$message" --arg residualPath "$residual" \
+      '{status:"error",category:$category,message:$message,residualPath:$residualPath}' 2>/dev/null)" \
+      && [[ -n "$serialized" ]]; then
+      printf '%s\n' "$serialized"
+      exit "$code"
+    fi
   else
-    jq -cn --arg category "$category" --arg message "$message" \
-      '{status:"error",category:$category,message:$message}'
+    if serialized="$(jq -cn --arg category "$category" --arg message "$message" \
+      '{status:"error",category:$category,message:$message}' 2>/dev/null)" \
+      && [[ -n "$serialized" ]]; then
+      printf '%s\n' "$serialized"
+      exit "$code"
+    fi
   fi
-  exit "$code"
+  fixed_error dependency 'jq failed while serializing an error result' 4
 }
 
 # Snapshot the selected file once. A later invocation deliberately reads it again.
@@ -85,7 +96,8 @@ fi
 [[ "$configured_root" == /* && -d "$configured_root" ]] \
   || json_error configuration 'configured directory must be an existing absolute directory' 3
 if ! jq -en --arg url "$base_url" \
-  '$url | test("^https?://([^/?#@[:space:]]+@)?(\\[[0-9a-f:.]+\\]|[^:/?#@[:space:]]+)(:[0-9]+)?(/[^?#[:cntrl:][:space:]]*)?$"; "i")' \
+  '(($url | contains("[") or contains("]")) | not) and
+   ($url | test("^https?://([^/?#@[:space:]]+@)?([^:/?#@[:space:]]+)(:[0-9]+)?(/[^?#[:cntrl:][:space:]]*)?$"; "i"))' \
   >/dev/null 2>&1; then
   json_error configuration 'baseUrl must be an absolute HTTP(S) URL without query or fragment' 3
 fi
