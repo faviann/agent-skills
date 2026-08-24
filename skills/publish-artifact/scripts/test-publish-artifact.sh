@@ -109,6 +109,49 @@ for kind in missing malformed incomplete relative-root missing-root query-url fr
 done
 chmod 600 "$FIXTURE_ROOT/config-unreadable.json"
 
+scenario 'illegal host characters and malformed authority escapes are configuration errors'
+invalid_authorities=(
+  'bad^host.example.test'
+  'bad|host.example.test'
+  'bad\host.example.test'
+  'exa%mple.example.test'
+  'exa%ZZmple.example.test'
+  'user%ZZ@example.test'
+  '256.1.1.1'
+  'example.test:65536'
+)
+for index in "${!invalid_authorities[@]}"; do
+  invalid_authority="${invalid_authorities[index]}"
+  invalid_authority_config="$FIXTURE_ROOT/invalid-authority-$index.json"
+  write_config "$invalid_authority_config" "$publish_root" "https://$invalid_authority/prefix"
+  set +e
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$invalid_authority_config" \
+    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "invalid authority succeeded: $invalid_authority"
+  assert_error configuration "$output"
+done
+
+scenario 'valid hostname IPv4 port userinfo and path-prefix authorities remain supported'
+valid_base_urls=(
+  'https://artifacts.example.test/releases/v1'
+  'http://192.0.2.1:8080/nested/prefix'
+  'https://exa%6Dple.test:443/path%20prefix'
+  'https://user%3Aname@example.test/private'
+  'http://example.test:0/zero-port'
+  'https://example.test:65535/maximum-port'
+  'https://example.test:000080/leading-zero-port'
+)
+for index in "${!valid_base_urls[@]}"; do
+  valid_base_url="${valid_base_urls[index]}"
+  valid_authority_config="$FIXTURE_ROOT/valid-authority-$index.json"
+  write_config "$valid_authority_config" "$publish_root" "$valid_base_url"
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$valid_authority_config" \
+    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+  [[ "$(jq -r .url <<<"$output")" == "$valid_base_url/"* ]] \
+    || fail "valid authority or path prefix was rejected: $valid_base_url ($output)"
+done
+
 scenario 'HTTP schemes are case-insensitive'
 uppercase_config="$FIXTURE_ROOT/uppercase-url.json"
 write_config "$uppercase_config" "$publish_root" 'HTTPS://artifacts.example.test/base/'

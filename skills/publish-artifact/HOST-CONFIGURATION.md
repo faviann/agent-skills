@@ -11,7 +11,7 @@ The default configuration is `${XDG_CONFIG_HOME:-$HOME/.config}/faviann-skills/a
 
 `directory` is an existing absolute publishing root. It may resolve through an infrastructure-owned symlink or mount. Every publisher-owned descendant must remain a real directory or regular file contained beneath the canonical root.
 
-`baseUrl` is an HTTP(S) URL with a hostname or bracketed IPv6 authority, an optional port, and no query or fragment. A trailing slash is accepted and normalized. Unknown configuration fields are ignored.
+`baseUrl` is an HTTP(S) URL with a hostname, IPv4 address, or bracketed IPv6 authority, an optional port, and no query or fragment. Host and optional userinfo use URI authority characters and complete `%HH` escapes; dotted IPv4 octets and ports stay within their numeric ranges. A trailing slash is accepted and normalized. Unknown configuration fields are ignored.
 
 An absent default file produces `unconfigured`. A selected missing file, an unreadable file, or invalid content produces a `configuration` error.
 

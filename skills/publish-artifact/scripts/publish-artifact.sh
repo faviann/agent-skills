@@ -101,6 +101,7 @@ json_escape() {
 valid_ipv4() {
   local address="$1" octet
   local -a octets
+  local LC_ALL=C
   IFS=. read -r -a octets <<<"$address"
   [[ "${#octets[@]}" -eq 4 ]] || return 1
   for octet in "${octets[@]}"; do
@@ -112,6 +113,7 @@ valid_ipv4() {
 count_ipv6_groups() {
   local side="$1" group
   local -a groups
+  local LC_ALL=C
   if [[ -z "$side" ]]; then
     IPV6_GROUP_COUNT=0
     return 0
@@ -145,6 +147,33 @@ valid_ipv6() {
   fi
 }
 
+valid_authority_component() {
+  local value="$1" allow_colon="$2" character escape index
+  local LC_ALL=C
+  [[ -n "$value" ]] || return 1
+  for ((index = 0; index < ${#value}; index++)); do
+    character="${value:index:1}"
+    case "$character" in
+      [A-Za-z0-9._~-]|'!'|'$'|'&'|"'"|'('|')'|'*'|'+'|','|';'|'=') ;;
+      ':') [[ "$allow_colon" == true ]] || return 1 ;;
+      '%')
+        escape="${value:index+1:2}"
+        [[ "${#escape}" -eq 2 && "$escape" =~ ^[0-9A-Fa-f]{2}$ ]] || return 1
+        ((index += 2))
+        ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+valid_port() {
+  local port="$1" numeric_port
+  local LC_ALL=C
+  [[ "$port" =~ ^0*([0-9]{1,5})$ ]] || return 1
+  numeric_port="${BASH_REMATCH[1]}"
+  (( 10#$numeric_port <= 65535 ))
+}
+
 valid_base_url() {
   local url="$1" remainder authority userinfo host_port host suffix ipv6
   [[ ! "$url" =~ [[:space:][:cntrl:]] && "$url" != *\?* && "$url" != *\#* ]] || return 1
@@ -157,6 +186,7 @@ valid_base_url() {
     userinfo="${authority%%@*}"
     host_port="${authority#*@}"
     [[ -n "$userinfo" && -n "$host_port" && "$host_port" != *@* ]] || return 1
+    valid_authority_component "$userinfo" true || return 1
   fi
   if [[ "$host_port" == \[* ]]; then
     [[ "$host_port" == *']'* ]] || return 1
@@ -164,7 +194,8 @@ valid_base_url() {
     suffix="${host_port#*]}"
     [[ -n "$ipv6" && "$ipv6" != *'['* && "$ipv6" != *']'* ]] || return 1
     if [[ -n "$suffix" ]]; then
-      [[ "$suffix" =~ ^:[0-9]+$ ]] || return 1
+      [[ "$suffix" == :* ]] || return 1
+      valid_port "${suffix#:}" || return 1
     fi
     valid_ipv6 "$ipv6"
   else
@@ -173,7 +204,12 @@ valid_base_url() {
     [[ -n "$host" ]] || return 1
     if [[ "$host_port" == *:* ]]; then
       suffix="${host_port#*:}"
-      [[ "$suffix" =~ ^[0-9]+$ ]] || return 1
+      valid_port "$suffix" || return 1
+    fi
+    if [[ "$host" == *.* && "$host" =~ ^[0-9.]+$ ]]; then
+      valid_ipv4 "$host"
+    else
+      valid_authority_component "$host" false
     fi
   fi
 }
