@@ -76,12 +76,17 @@ if ! jq -e '
 ' >/dev/null 2>&1 <<<"$config_json"; then
   json_error configuration 'artifact configuration must contain string directory and baseUrl values' 3
 fi
-configured_root="$(jq -r .directory <<<"$config_json")"
-base_url="$(jq -r .baseUrl <<<"$config_json")"
+if ! configured_root="$(jq -r .directory <<<"$config_json")"; then
+  json_error dependency 'jq failed while reading configured directory' 4
+fi
+if ! base_url="$(jq -r .baseUrl <<<"$config_json")"; then
+  json_error dependency 'jq failed while reading configured base URL' 4
+fi
 [[ "$configured_root" == /* && -d "$configured_root" ]] \
   || json_error configuration 'configured directory must be an existing absolute directory' 3
 if ! jq -en --arg url "$base_url" \
-  '$url | test("^https?://[^/?#[:space:]]+(/[^?#[:cntrl:][:space:]]*)?$")' >/dev/null 2>&1; then
+  '$url | test("^https?://([^/?#@[:space:]]+@)?(\\[[0-9a-f:.]+\\]|[^:/?#@[:space:]]+)(:[0-9]+)?(/[^?#[:cntrl:][:space:]]*)?$"; "i")' \
+  >/dev/null 2>&1; then
   json_error configuration 'baseUrl must be an absolute HTTP(S) URL without query or fragment' 3
 fi
 while [[ "$base_url" == */ ]]; do base_url="${base_url%/}"; done
@@ -106,6 +111,18 @@ fi
   || json_error configuration 'canonical configured root must be a directory' 3
 
 repository_name="${PWD##*/}"
+git_marker=''
+marker_search="$PWD"
+while :; do
+  if [[ -e "$marker_search/.git" || -L "$marker_search/.git" ]]; then
+    git_marker="$marker_search/.git"
+    break
+  fi
+  [[ "$marker_search" == / ]] && break
+  marker_search="${marker_search%/*}"
+  [[ -n "$marker_search" ]] || marker_search=/
+done
+git_grouping_derived=false
 if command -v git >/dev/null 2>&1; then
   if common_dir="$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
     if canonical_common="$(realpath -e -- "$common_dir" 2>/dev/null)"; then
@@ -115,10 +132,21 @@ if command -v git >/dev/null 2>&1; then
       else
         repository_name="${canonical_common##*/}"
       fi
+      git_grouping_derived=true
     fi
   fi
 fi
-repository_group="$(LC_ALL=C printf '%s' "$repository_name" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+if [[ "$git_grouping_derived" == false && -n "$git_marker" ]]; then
+  if [[ ! -d "$git_marker" || -L "$git_marker" ]]; then
+    json_error dependency 'Git is required to derive primary-checkout grouping for this worktree' 4
+  fi
+  repository_name="${git_marker%/.git}"
+  repository_name="${repository_name##*/}"
+fi
+if ! repository_group="$(LC_ALL=C printf '%s' "$repository_name" \
+  | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')"; then
+  json_error dependency 'repository grouping could not be normalized' 4
+fi
 [[ -n "$repository_group" && "$repository_group" != '.' && "$repository_group" != '..' ]] \
   || repository_group=repository
 
@@ -146,8 +174,11 @@ generation_directory=''
 timestamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)" \
   || json_error dependency 'UTC timestamp generation failed' 4
 for _ in {1..16}; do
-  suffix="$(od -An -N12 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
-  [[ "${#suffix}" -eq 24 ]] || json_error dependency 'random suffix generation failed' 4
+  if ! suffix="$(od -An -N12 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"; then
+    json_error dependency 'random suffix generation failed' 4
+  fi
+  [[ "${#suffix}" -eq 24 && "$suffix" =~ ^[0-9a-f]{24}$ ]] \
+    || json_error dependency 'random suffix generation failed' 4
   candidate="$producer_directory/$timestamp-$suffix"
   if mkdir -- "$candidate" >/dev/null 2>&1; then
     generation_directory="$candidate"

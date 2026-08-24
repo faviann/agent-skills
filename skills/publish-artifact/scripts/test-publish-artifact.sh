@@ -83,7 +83,7 @@ output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" FAVIANN_SKIL
 [[ "$(jq -r .url <<<"$output")" == http://localhost:8080/two/* ]] || fail 'base URL was not reread'
 
 scenario 'missing selected and invalid present configurations fail as configuration errors'
-for kind in missing malformed incomplete relative-root missing-root query-url fragment-url space-url ftp-url unreadable; do
+for kind in missing malformed incomplete relative-root missing-root query-url fragment-url space-url empty-host invalid-authority ftp-url unreadable; do
   bad="$FIXTURE_ROOT/config-$kind.json"
   case "$kind" in
     missing) ;;
@@ -94,6 +94,8 @@ for kind in missing malformed incomplete relative-root missing-root query-url fr
     query-url) write_config "$bad" "$publish_root" 'https://example.test/x?q=1' ;;
     fragment-url) write_config "$bad" "$publish_root" 'https://example.test/x#y' ;;
     space-url) write_config "$bad" "$publish_root" 'https://example.test/not encoded' ;;
+    empty-host) write_config "$bad" "$publish_root" 'https://:443/base' ;;
+    invalid-authority) write_config "$bad" "$publish_root" 'https://user@@example.test/base' ;;
     ftp-url) write_config "$bad" "$publish_root" 'ftp://example.test/x' ;;
     unreadable) write_config "$bad" "$publish_root" 'https://example.test'; chmod 000 "$bad" ;;
   esac
@@ -105,6 +107,14 @@ for kind in missing malformed incomplete relative-root missing-root query-url fr
   [[ ! -e "$FIXTURE_ROOT/not-created" ]] || fail 'publisher created a configured root'
 done
 chmod 600 "$FIXTURE_ROOT/config-unreadable.json"
+
+scenario 'HTTP schemes are case-insensitive'
+uppercase_config="$FIXTURE_ROOT/uppercase-url.json"
+write_config "$uppercase_config" "$publish_root" 'HTTPS://artifacts.example.test/base/'
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$uppercase_config" \
+  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+[[ "$(jq -r .url <<<"$output")" == HTTPS://artifacts.example.test/base/* ]] \
+  || fail "uppercase HTTPS scheme was not accepted: $output"
 
 scenario 'configured publication without jq is a dependency error'
 set +e
@@ -149,6 +159,39 @@ group_of() { jq -r .path <<<"$1" | sed "s#^$group_root/##" | cut -d/ -f1; }
 [[ "$(group_of "$main_output")" == "$(group_of "$worktree_output")" ]] || fail 'linked worktree grouping differs'
 [[ "$(group_of "$main_output")" != "$(group_of "$other_output")" ]] || fail 'unrelated repository grouping collided'
 
+scenario 'linked worktrees fail stably rather than grouping by worktree name when Git fails'
+broken_git_bin="$FIXTURE_ROOT/broken-git-bin"; mkdir "$broken_git_bin"
+printf '#!/usr/bin/env bash\nexit 74\n' > "$broken_git_bin/git"; chmod +x "$broken_git_bin/git"
+set +e
+output="$(cd "$worktree" && PATH="$broken_git_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" \
+  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+set -e
+[[ "$status" -ne 0 ]] || fail 'linked worktree publication with broken Git succeeded'
+assert_error dependency "$output"
+[[ ! -e "$group_root/branch-worktree" ]] || fail 'linked worktree basename leaked into grouping'
+
+scenario 'linked worktrees also fail stably when Git is unavailable'
+no_git_bin="$FIXTURE_ROOT/no-git-bin"; mkdir "$no_git_bin"
+for dependency in bash jq uname realpath iconv date od tr mkdir cp rm sed; do
+  ln -s "$(command -v "$dependency")" "$no_git_bin/$dependency"
+done
+mkdir "$worktree/nested-context"
+set +e
+output="$(cd "$worktree/nested-context" && PATH="$no_git_bin" FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" \
+  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+set -e
+[[ "$status" -ne 0 ]] || fail 'linked worktree publication without Git succeeded'
+assert_error dependency "$output"
+[[ ! -e "$group_root/nested-context" ]] || fail 'nested worktree basename leaked into grouping'
+
+scenario 'outside Git retains invocation-directory grouping when Git fails'
+outside_root="$FIXTURE_ROOT/outside-root"; outside_repo="$FIXTURE_ROOT/outside-context"; mkdir "$outside_root" "$outside_repo"
+outside_config="$FIXTURE_ROOT/outside.json"; write_config "$outside_config" "$outside_root" 'https://example.test/outside'
+output="$(cd "$outside_repo" && PATH="$broken_git_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$outside_config" \
+  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+[[ "$(jq -r .path <<<"$output")" == "$outside_root/outside-context/"* ]] \
+  || fail "outside-Git fallback changed: $output"
+
 scenario 'concurrent publications allocate distinct generations without overwriting'
 concurrent_root="$FIXTURE_ROOT/concurrent"; mkdir "$concurrent_root"; concurrent_config="$FIXTURE_ROOT/concurrent.json"; write_config "$concurrent_config" "$concurrent_root" 'https://example.test/c'
 pids=(); outputs=()
@@ -160,6 +203,20 @@ for pid in "${pids[@]}"; do wait "$pid" || fail 'concurrent invocation failed'; 
 paths="$FIXTURE_ROOT/paths"; for result in "${outputs[@]}"; do jq -r .path "$result"; done > "$paths"
 [[ "$(sort -u "$paths" | wc -l)" -eq 20 ]] || fail 'generation collision occurred'
 while IFS= read -r path; do cmp -s "$source_file" "$path" || fail "concurrent output changed: $path"; done < "$paths"
+
+scenario 'random-suffix command failure is one stable dependency result'
+for failed_command in od tr; do
+  random_failure_bin="$FIXTURE_ROOT/random-failure-$failed_command"; mkdir "$random_failure_bin"
+  printf '#!/usr/bin/env bash\nexit 75\n' > "$random_failure_bin/$failed_command"
+  chmod +x "$random_failure_bin/$failed_command"
+  set +e
+  output="$(cd "$repo" && PATH="$random_failure_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$concurrent_config" \
+    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "publication with failed $failed_command succeeded"
+  assert_error dependency "$output"
+  [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail "$failed_command failure did not emit exactly one JSON line"
+done
 
 scenario 'invalid source shapes and primary names are caller errors'
 mkdir "$FIXTURE_ROOT/source-dir"; ln -s "$source_file" "$FIXTURE_ROOT/source-link"
