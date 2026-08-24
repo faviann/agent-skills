@@ -57,23 +57,125 @@ if ! jq_probe="$(jq -cn 'true' 2>/dev/null)" || [[ "$jq_probe" != true ]]; then
 fi
 
 json_error() {
-  local category="$1" message="$2" code="$3" residual="${4:-}" serialized
+  local category="$1" message="$2" code="$3" residual="${4:-}"
+  local escaped_category escaped_message escaped_residual
+  json_escape "$category"; escaped_category="$JSON_ESCAPED"
+  json_escape "$message"; escaped_message="$JSON_ESCAPED"
   if [[ -n "$residual" ]]; then
-    if serialized="$(jq -cn --arg category "$category" --arg message "$message" --arg residualPath "$residual" \
-      '{status:"error",category:$category,message:$message,residualPath:$residualPath}' 2>/dev/null)" \
-      && [[ -n "$serialized" ]]; then
-      printf '%s\n' "$serialized"
-      exit "$code"
-    fi
+    json_escape "$residual"; escaped_residual="$JSON_ESCAPED"
+    printf '{"status":"error","category":"%s","message":"%s","residualPath":"%s"}\n' \
+      "$escaped_category" "$escaped_message" "$escaped_residual"
   else
-    if serialized="$(jq -cn --arg category "$category" --arg message "$message" \
-      '{status:"error",category:$category,message:$message}' 2>/dev/null)" \
-      && [[ -n "$serialized" ]]; then
-      printf '%s\n' "$serialized"
-      exit "$code"
+    printf '{"status":"error","category":"%s","message":"%s"}\n' \
+      "$escaped_category" "$escaped_message"
+  fi
+  exit "$code"
+}
+
+json_escape() {
+  local input="$1" output='' character escaped code index
+  for ((index = 0; index < ${#input}; index++)); do
+    character="${input:index:1}"
+    case "$character" in
+      '"') output+='\"' ;;
+      '\') output+='\\' ;;
+      $'\b') output+='\b' ;;
+      $'\f') output+='\f' ;;
+      $'\n') output+='\n' ;;
+      $'\r') output+='\r' ;;
+      $'\t') output+='\t' ;;
+      *)
+        printf -v code '%d' "'$character"
+        if (( code < 32 )); then
+          printf -v escaped '\\u%04x' "$code"
+          output+="$escaped"
+        else
+          output+="$character"
+        fi
+        ;;
+    esac
+  done
+  JSON_ESCAPED="$output"
+}
+
+valid_ipv4() {
+  local address="$1" octet
+  local -a octets
+  IFS=. read -r -a octets <<<"$address"
+  [[ "${#octets[@]}" -eq 4 ]] || return 1
+  for octet in "${octets[@]}"; do
+    [[ "$octet" =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
+    (( 10#$octet <= 255 )) || return 1
+  done
+}
+
+count_ipv6_groups() {
+  local side="$1" group
+  local -a groups
+  if [[ -z "$side" ]]; then
+    IPV6_GROUP_COUNT=0
+    return 0
+  fi
+  [[ "$side" != :* && "$side" != *: ]] || return 1
+  IFS=: read -r -a groups <<<"$side"
+  for group in "${groups[@]}"; do
+    [[ "$group" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+  done
+  IPV6_GROUP_COUNT="${#groups[@]}"
+}
+
+valid_ipv6() {
+  local address="$1" ipv4 left right left_count right_count
+  if [[ "$address" == *.* ]]; then
+    [[ "$address" == *:* ]] || return 1
+    ipv4="${address##*:}"
+    valid_ipv4 "$ipv4" || return 1
+    address="${address%:*}:0:0"
+  fi
+  if [[ "$address" == *::* ]]; then
+    left="${address%%::*}"
+    right="${address#*::}"
+    [[ "$right" != *::* ]] || return 1
+    count_ipv6_groups "$left" || return 1; left_count="$IPV6_GROUP_COUNT"
+    count_ipv6_groups "$right" || return 1; right_count="$IPV6_GROUP_COUNT"
+    (( left_count + right_count < 8 ))
+  else
+    count_ipv6_groups "$address" || return 1
+    (( IPV6_GROUP_COUNT == 8 ))
+  fi
+}
+
+valid_base_url() {
+  local url="$1" remainder authority userinfo host_port host suffix ipv6
+  [[ ! "$url" =~ [[:space:][:cntrl:]] && "$url" != *\?* && "$url" != *\#* ]] || return 1
+  [[ "$url" =~ ^[Hh][Tt][Tt][Pp]([Ss])?:// ]] || return 1
+  remainder="${url#*://}"
+  authority="${remainder%%/*}"
+  [[ -n "$authority" ]] || return 1
+  host_port="$authority"
+  if [[ "$authority" == *@* ]]; then
+    userinfo="${authority%%@*}"
+    host_port="${authority#*@}"
+    [[ -n "$userinfo" && -n "$host_port" && "$host_port" != *@* ]] || return 1
+  fi
+  if [[ "$host_port" == \[* ]]; then
+    [[ "$host_port" == *']'* ]] || return 1
+    ipv6="${host_port#\[}"; ipv6="${ipv6%%]*}"
+    suffix="${host_port#*]}"
+    [[ -n "$ipv6" && "$ipv6" != *'['* && "$ipv6" != *']'* ]] || return 1
+    if [[ -n "$suffix" ]]; then
+      [[ "$suffix" =~ ^:[0-9]+$ ]] || return 1
+    fi
+    valid_ipv6 "$ipv6"
+  else
+    [[ "$host_port" != *'['* && "$host_port" != *']'* ]] || return 1
+    host="${host_port%%:*}"
+    [[ -n "$host" ]] || return 1
+    if [[ "$host_port" == *:* ]]; then
+      suffix="${host_port#*:}"
+      [[ "$suffix" =~ ^[0-9]+$ ]] || return 1
     fi
   fi
-  fixed_error dependency 'jq failed while serializing an error result' 4
 }
 
 # Snapshot the selected file once. A later invocation deliberately reads it again.
@@ -95,10 +197,7 @@ if ! base_url="$(jq -r .baseUrl <<<"$config_json")"; then
 fi
 [[ "$configured_root" == /* && -d "$configured_root" ]] \
   || json_error configuration 'configured directory must be an existing absolute directory' 3
-if ! jq -en --arg url "$base_url" \
-  '(($url | contains("[") or contains("]")) | not) and
-   ($url | test("^https?://([^/?#@[:space:]]+@)?([^:/?#@[:space:]]+)(:[0-9]+)?(/[^?#[:cntrl:][:space:]]*)?$"; "i"))' \
-  >/dev/null 2>&1; then
+if ! valid_base_url "$base_url"; then
   json_error configuration 'baseUrl must be an absolute HTTP(S) URL without query or fragment' 3
 fi
 while [[ "$base_url" == */ ]]; do base_url="${base_url%/}"; done

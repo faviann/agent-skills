@@ -117,6 +117,37 @@ output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$uppercase_config" \
 [[ "$(jq -r .url <<<"$output")" == HTTPS://artifacts.example.test/base/* ]] \
   || fail "uppercase HTTPS scheme was not accepted: $output"
 
+scenario 'valid full, compressed, and embedded-IPv4 IPv6 authorities are accepted'
+for ipv6_host in \
+  '[2001:0db8:0000:0000:0000:ff00:0042:8329]' \
+  '[2001:db8::1]' \
+  '[::1]' \
+  '[::ffff:192.0.2.128]'; do
+  ipv6_config="$FIXTURE_ROOT/ipv6-$(printf '%s' "$ipv6_host" | tr -cd '[:alnum:]').json"
+  write_config "$ipv6_config" "$publish_root" "https://$ipv6_host:8443/base"
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$ipv6_config" \
+    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+  [[ "$(jq -r .url <<<"$output")" == "https://$ipv6_host:8443/base/"* ]] \
+    || fail "valid IPv6 authority was rejected: $ipv6_host ($output)"
+done
+
+scenario 'invalid IPv6 group counts and content are rejected'
+for ipv6_host in \
+  '[1:2:3:4:5:6:7]' \
+  '[1:2:3:4:5:6:7:8:9]' \
+  '[2001:db8::gg]' \
+  '[2001:db8::1::2]' \
+  '[::ffff:999.0.2.1]'; do
+  ipv6_config="$FIXTURE_ROOT/invalid-ipv6-$(printf '%s' "$ipv6_host" | tr -cd '[:alnum:]').json"
+  write_config "$ipv6_config" "$publish_root" "https://$ipv6_host/base"
+  set +e
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$ipv6_config" \
+    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "invalid IPv6 authority succeeded: $ipv6_host"
+  assert_error configuration "$output"
+done
+
 scenario 'configured publication without jq is a dependency error'
 set +e
 output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" PATH=/usr/bin:/bin /bin/bash "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
@@ -138,7 +169,7 @@ set -e
 assert_error dependency "$output"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'broken jq did not emit exactly one JSON line'
 
-scenario 'jq failure while serializing an error uses the dependency fallback'
+scenario 'error serialization remains independent of jq'
 serializer_jq_bin="$FIXTURE_ROOT/serializer-jq-bin"; mkdir "$serializer_jq_bin"
 real_jq="$(command -v jq)"
 printf '%s\n' '#!/usr/bin/env bash' \
@@ -150,9 +181,7 @@ output="$(cd "$repo" && PATH="$serializer_jq_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_
   "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'error serialization with failed jq succeeded'
-assert_error dependency "$output"
-[[ "$(jq -r .message <<<"$output")" == 'jq failed while serializing an error result' ]] \
-  || fail "serializer fallback message changed: $output"
+assert_error configuration "$output"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'serializer fallback did not emit exactly one JSON line'
 
 scenario 'a host without Bash receives a dependency result'
@@ -282,5 +311,26 @@ set -e
 residual="$(jq -r .residualPath <<<"$output")"
 [[ "$residual" == "$failure_root"/* && -d "$residual" ]] || fail "bad residual path: $residual"
 [[ -f "$failure_root/unrelated/marker" ]] || fail 'failed cleanup touched a sibling'
+
+scenario 'jq URL encoding plus cleanup failure preserves original context and exact residual path'
+compound_root="$FIXTURE_ROOT/compound \"quoted\"\\root é"$'\n''line'; mkdir "$compound_root"
+compound_config="$FIXTURE_ROOT/compound.json"; write_config "$compound_config" "$compound_root" 'https://example.test/compound'
+compound_bin="$FIXTURE_ROOT/compound-bin"; mkdir "$compound_bin"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'for argument in "$@"; do [[ "$argument" == *"@uri"* ]] && exit 78; done' \
+  "exec $(printf '%q' "$real_jq") \"\$@\"" > "$compound_bin/jq"
+printf '#!/usr/bin/env bash\nexit 79\n' > "$compound_bin/rm"
+chmod +x "$compound_bin/jq" "$compound_bin/rm"
+set +e
+output="$(cd "$repo" && PATH="$compound_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$compound_config" \
+  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+set -e
+[[ "$status" -ne 0 ]] || fail 'compound jq and cleanup failure succeeded'
+assert_error publication "$output"
+[[ "$(jq -r .message <<<"$output")" == 'published URL could not be encoded; cleanup also failed' ]] \
+  || fail "compound failure lost original context: $output"
+residual="$(jq -r .residualPath <<<"$output")"
+[[ "$residual" == "$compound_root"/* && -d "$residual" ]] || fail "compound failure lost exact residual path: $output"
+[[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'compound failure did not emit exactly one JSON line'
 
 printf 'All publish-artifact scenarios passed.\n'

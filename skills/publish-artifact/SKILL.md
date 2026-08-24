@@ -39,6 +39,6 @@ The default configuration is `${XDG_CONFIG_HOME:-$HOME/.config}/faviann-skills/a
 }
 ```
 
-`baseUrl` accepts an HTTP(S) URL with a non-bracketed host authority, an optional port, and no query or fragment. Bracketed IP literals are not supported in this version.
+`baseUrl` accepts an HTTP(S) URL with a hostname or bracketed IPv6 authority, an optional port, and no query or fragment.
 
 The host owns creation, permissions, serving, access control, and retention for `directory`. The publisher supports Linux with Bash and `jq`; Git is additionally required when a linked worktree needs its primary-checkout grouping derived. Outside Git, the invocation-directory name remains the grouping fallback. The publisher does not create the configured root, manage it, inspect artifact content, or verify HTTP reachability.
