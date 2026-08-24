@@ -366,4 +366,6 @@ if ! result="$(jq -cn --arg path "$canonical_destination" --arg url "$base_url/$
   '{status:"published",path:$path,url:$url}')"; then
   publication_failure 'published result could not be serialized'
 fi
-printf '%s\n' "$result"
+if ! printf '%s\n' "$result"; then
+  publication_failure 'published result could not be emitted'
+fi

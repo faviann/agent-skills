@@ -355,6 +355,21 @@ residual="$(jq -r .residualPath <<<"$output")"
 [[ "$residual" == "$failure_root"/* && -d "$residual" ]] || fail "bad residual path: $residual"
 [[ -f "$failure_root/unrelated/marker" ]] || fail 'failed cleanup touched a sibling'
 
+scenario 'result emission failure cleans its generation'
+full_root="$FIXTURE_ROOT/full-root"; mkdir "$full_root"
+full_config="$FIXTURE_ROOT/full.json"; write_config "$full_config" "$full_root" 'https://example.test/full'
+set +e
+(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$full_config" \
+  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")" > /dev/full 2>/dev/null); status=$?
+set -e
+[[ "$status" -ne 0 ]] || fail 'publication with failed result emission succeeded'
+if [[ -d "$full_root/unconfigured-repo/producer" ]]; then
+  generation_count="$(find "$full_root/unconfigured-repo/producer" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+else
+  generation_count=0
+fi
+[[ "$generation_count" -eq 0 ]] || fail 'failed result emission left a generation behind'
+
 scenario 'jq URL encoding plus cleanup failure preserves original context and exact residual path'
 compound_root="$FIXTURE_ROOT/compound \"quoted\"\\root é"$'\n''line'; mkdir "$compound_root"
 compound_config="$FIXTURE_ROOT/compound.json"; write_config "$compound_config" "$compound_root" 'https://example.test/compound'
