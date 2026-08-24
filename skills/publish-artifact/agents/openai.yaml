@@ -1,0 +1,3 @@
+interface:
+  display_name: "Publish Artifact"
+  short_description: "Publish a file through a host mapping"
