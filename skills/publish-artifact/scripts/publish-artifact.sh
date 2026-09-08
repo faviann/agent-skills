@@ -16,17 +16,31 @@ fixed_error() {
   exit "$code"
 }
 
-[[ "$#" -eq 3 ]] || fixed_error invalid-call 'expected producer, absolute source file, and relative primary name' 2
-producer="$1"; source_file="$2"; primary_name="$3"
+[[ "$#" -eq 3 ]] || fixed_error invalid-call 'expected producer, absolute source file or directory, and relative primary path' 2
+producer="$1"; source_path="$2"; primary_path="$3"
 
 [[ "$producer" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
   || fixed_error invalid-call 'producer must be a lowercase slug' 2
-[[ "$source_file" == /* && -f "$source_file" && ! -L "$source_file" ]] \
-  || fixed_error invalid-call 'source must be an absolute regular file, not a symlink' 2
-[[ -n "$primary_name" && "$primary_name" != */* && "$primary_name" != '.' && "$primary_name" != '..' ]] \
-  || fixed_error invalid-call 'primary name must be one relative filename' 2
-[[ "$primary_name" == "${source_file##*/}" ]] \
-  || fixed_error invalid-call 'primary name must match the source filename' 2
+# Remove trailing directory syntax without resolving the source entry itself.
+while [[ "$source_path" != / && ( "$source_path" == */ || "$source_path" == */. ) ]]; do
+  source_path="${source_path%/}"; source_path="${source_path%/.}"
+  [[ -n "$source_path" ]] || source_path=/
+done
+[[ "$source_path" == /* && ( -f "$source_path" || -d "$source_path" ) && ! -L "$source_path" ]] \
+  || fixed_error invalid-call 'source must be an absolute regular file or directory, not a symlink' 2
+safe_relative_path() {
+  [[ -n "$1" && "$1" != /* && "$1" != */ && "$1" != *//* &&
+     "/$1/" != */./* && "/$1/" != */../* && ! "$1" =~ [[:cntrl:]] ]]
+}
+safe_relative_path "$primary_path" \
+  || fixed_error invalid-call 'primary must be a relative path without traversal or control characters' 2
+if [[ -f "$source_path" ]]; then
+  [[ "$primary_path" == "${source_path##*/}" ]] \
+    || fixed_error invalid-call 'primary name must match the source filename' 2
+else
+  [[ -f "$source_path/$primary_path" && ! -L "$source_path/$primary_path" ]] \
+    || fixed_error invalid-call 'primary must identify a regular file inside the source directory' 2
+fi
 
 selector_set=false
 if [[ -n "${FAVIANN_SKILLS_ARTIFACT_CONFIG+x}" ]]; then
@@ -248,14 +262,57 @@ done
 [[ -r /dev/urandom ]] || json_error dependency '/dev/urandom is required' 4
 
 valid_utf8() { printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; }
-valid_utf8 "$primary_name" || json_error invalid-call 'primary name must be valid UTF-8' 2
-[[ ! "$primary_name" =~ [[:cntrl:]] ]] || json_error invalid-call 'primary name must not contain control characters' 2
+valid_utf8 "$primary_path" || json_error invalid-call 'primary name must be valid UTF-8' 2
+[[ ! "$primary_path" =~ [[:cntrl:]] ]] || json_error invalid-call 'primary name must not contain control characters' 2
 
 if ! canonical_root="$(realpath -e -- "$configured_root" 2>/dev/null)"; then
   json_error configuration 'configured directory could not be canonicalized' 3
 fi
 [[ -d "$canonical_root" && ! -L "$canonical_root" ]] \
   || json_error configuration 'canonical configured root must be a directory' 3
+root_prefix="${canonical_root%/}/"
+
+if ! canonical_source="$(realpath -e -- "$source_path" 2>/dev/null)"; then
+  json_error invalid-call 'source could not be canonicalized' 2
+fi
+if [[ "$canonical_source" == "$canonical_root" ||
+      "$canonical_source" == "$root_prefix"* ||
+      "$canonical_root" == "${canonical_source%/}/"* ]]; then
+  json_error invalid-call 'source and publishing root must not overlap' 2
+fi
+
+# Validate the complete prepared tree before allocating a generation. Keep the
+# source unchanged during publication; this inventory is also the copy set.
+source_entries=(); source_types=()
+validate_tree() {
+  local directory="$1" prefix="$2" entry relative
+  [[ -r "$directory" && -x "$directory" ]] \
+    || json_error publication 'source directory could not be read' 5
+  for entry in "$directory"/*; do
+    relative="$prefix${entry##*/}"
+    safe_relative_path "$relative" && valid_utf8 "$relative" \
+      || json_error invalid-call 'source paths must be relative, control-free valid UTF-8 without traversal' 2
+    [[ ! -L "$entry" ]] || json_error invalid-call 'source symlinks are not supported' 2
+    source_entries+=("$relative")
+    if [[ -d "$entry" ]]; then
+      source_types+=(directory)
+      validate_tree "$entry" "$relative/"
+    elif [[ -f "$entry" ]]; then
+      source_types+=(file)
+    else
+      json_error invalid-call 'source contains an entry other than a regular file or directory' 2
+    fi
+  done
+}
+if [[ -d "$source_path" ]]; then
+  set +f
+  shopt -u failglob
+  shopt -s dotglob nullglob
+  validate_tree "$source_path" ''
+  shopt -u dotglob nullglob
+else
+  source_entries+=("$primary_path"); source_types+=(file)
+fi
 
 repository_name="${PWD##*/}"
 git_marker=''
@@ -310,7 +367,7 @@ ensure_owned_directory() {
   [[ -d "$path" && ! -L "$path" ]]
 }
 
-repository_directory="$canonical_root/$repository_group"
+repository_directory="$root_prefix$repository_group"
 producer_directory="$repository_directory/$producer"
 ensure_owned_directory "$repository_directory" \
   || json_error publication 'repository grouping is not a real usable directory' 5
@@ -346,19 +403,37 @@ publication_failure() {
   fi
 }
 
-destination="$generation_directory/$primary_name"
-if ! cp -- "$source_file" "$destination" >/dev/null 2>&1; then
-  publication_failure 'source file could not be copied'
-fi
+destination="$generation_directory/$primary_path"
+for index in "${!source_entries[@]}"; do
+  relative="${source_entries[index]}"
+  entry_destination="$generation_directory/$relative"
+  if [[ "${source_types[index]}" == directory ]]; then
+    ensure_owned_directory "$entry_destination" \
+      || publication_failure 'source directory could not be copied'
+  else
+    entry_source="$source_path"
+    [[ ! -d "$source_path" ]] || entry_source="$source_path/$relative"
+    if ! cp -P -T -- "$entry_source" "$entry_destination" >/dev/null 2>&1; then
+      publication_failure 'source file could not be copied'
+    fi
+    [[ -f "$entry_destination" && ! -L "$entry_destination" ]] \
+      || publication_failure 'published result is not a real regular file'
+  fi
+  if ! canonical_entry="$(realpath -e -- "$entry_destination" 2>/dev/null)"; then
+    publication_failure 'published result could not be canonicalized'
+  fi
+  [[ "$canonical_entry" == "$generation_directory/$relative" ]] \
+    || publication_failure 'published result escaped its generation or traversed a symlink'
+done
 [[ -f "$destination" && ! -L "$destination" ]] \
   || publication_failure 'published result is not a real regular file'
 if ! canonical_destination="$(realpath -e -- "$destination" 2>/dev/null)"; then
   publication_failure 'published result could not be canonicalized'
 fi
-[[ "$canonical_destination" == "$canonical_root/"* ]] \
+[[ "$canonical_destination" == "$root_prefix"* ]] \
   || publication_failure 'published result escaped the configured root'
 
-relative_path="${canonical_destination#"$canonical_root/"}"
+relative_path="${canonical_destination#"$root_prefix"}"
 if ! encoded_path="$(jq -rn --arg path "$relative_path" '$path | split("/") | map(@uri) | join("/")')"; then
   publication_failure 'published URL could not be encoded'
 fi

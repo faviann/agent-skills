@@ -36,6 +36,13 @@ output="$(invoke "$repo" "$home" architecture-report "$source_file" "$(basename 
 [[ "$output" == '{"status":"unconfigured"}' ]] || fail "unexpected result: $output"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'unconfigured result was not one line'
 
+scenario 'an absent default configuration preserves handoff through a source ancestor symlink'
+source_parent="$FIXTURE_ROOT/source-parent"; source_parent_link="$FIXTURE_ROOT/source-parent-link"
+mkdir "$source_parent"; ln -s "$source_parent" "$source_parent_link"
+cp -- "$source_file" "$source_parent/report.html"
+output="$(invoke "$repo" "$home" architecture-report "$source_parent_link/report.html" report.html)"
+[[ "$output" == '{"status":"unconfigured"}' ]] || fail "ancestor symlink prevented unconfigured handoff: $output"
+
 scenario 'invalid calls have a stable category'
 set +e
 output="$(invoke "$repo" "$home" Bad-Slug "$source_file" "$(basename "$source_file")")"; status=$?
@@ -70,6 +77,13 @@ relative_published="${published_path#"$publish_root/"}"
 generation="$(basename "$(dirname "$published_path")")"
 [[ "$generation" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{24}$ ]] || fail "generation is not timestamped and collision resistant: $generation"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'success result was not one line'
+
+scenario 'configured publication accepts a regular file through a source ancestor symlink'
+output="$(invoke "$repo" "$home" architecture-report "$source_parent_link/report.html" report.html)"
+[[ "$(jq -r .status <<<"$output")" == published ]] || fail "ancestor symlink prevented publication: $output"
+ancestor_path="$(jq -r .path <<<"$output")"
+[[ "$ancestor_path" == "$publish_root/"* ]] || fail 'ancestor source escaped publishing root'
+cmp -s "$source_parent/report.html" "$ancestor_path" || fail 'ancestor source bytes changed'
 
 scenario 'a selected configuration overrides the default and is reread next invocation'
 selected_root="$FIXTURE_ROOT/selected"; next_root="$FIXTURE_ROOT/next"; mkdir -p "$selected_root" "$next_root"
@@ -390,5 +404,209 @@ assert_error publication "$output"
 residual="$(jq -r .residualPath <<<"$output")"
 [[ "$residual" == "$compound_root"/* && -d "$residual" ]] || fail "compound failure lost exact residual path: $output"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'compound failure did not emit exactly one JSON line'
+
+scenario 'directory publication copies the complete prepared tree and returns its nested primary URL'
+tree="$FIXTURE_ROOT/prepared-tree"
+primary='pages é/report #?%.html'
+mkdir -p "$tree/pages é" "$tree/assets/icons" "$tree/empty" "$tree/.hidden"
+printf '<h1>directory report</h1>\n' > "$tree/$primary"
+printf 'body { color: blue; }\n' > "$tree/assets/style.css"
+printf '\000\001\377' > "$tree/assets/icons/opaque.bin"
+printf private-name-not-filtered > "$tree/.hidden/config"
+printf ignored-by-publisher > "$tree/.gitignore"
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory "$tree/" "$primary")"
+tree_path="$(jq -r .path <<<"$output")"
+tree_generation="${tree_path%/"$primary"}"
+[[ "$(jq -r .url <<<"$output")" == https://artifacts.example.test/public/*/directory/*/pages%20%C3%A9/report%20%23%3F%25.html ]] \
+  || fail "nested primary URL did not encode each segment: $output"
+diff -r "$tree" "$tree_generation" || fail 'directory publication changed or filtered the prepared tree'
+[[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'directory success was not one JSON line'
+
+scenario 'inherited glob options preserve the complete prepared tree'
+glob_tree="$FIXTURE_ROOT/glob-tree"; mkdir -p "$glob_tree/empty"
+printf primary > "$glob_tree/*"
+printf asset > "$glob_tree/app.js"
+printf index > "$glob_tree/index.html"
+for inherited_option in SHELLOPTS=noglob BASHOPTS=failglob; do
+  output="$(cd "$repo" && env "$inherited_option" FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" \
+    "$PUBLISHER" inherited-glob "$glob_tree" '*')"
+  [[ "$(jq -r .status <<<"$output")" == published ]] || fail "inherited $inherited_option prevented publication: $output"
+  glob_path="$(jq -r .path <<<"$output")"
+  diff -r "$glob_tree" "${glob_path%/*}" || fail "inherited $inherited_option changed or filtered the prepared tree"
+done
+
+scenario 'directory primary paths must be contained regular files without traversal'
+for bad_primary in /etc/passwd ../outside.html 'pages é/../../outside.html' 'pages é/../pages é/report #?%.html' './pages é/report #?%.html' 'pages é//report #?%.html' 'pages é/' assets missing.html; do
+  check_invalid_call directory "$tree" "$bad_primary"
+done
+
+scenario 'all directory entries reject symlinks special files and invalid path bytes'
+for bad_kind in file-link directory-link dangling-link fifo control-file control-directory invalid-file invalid-directory; do
+  invalid_tree="$FIXTURE_ROOT/tree-$bad_kind"; mkdir "$invalid_tree"
+  printf primary > "$invalid_tree/index.html"
+  case "$bad_kind" in
+    file-link) ln -s "$source_file" "$invalid_tree/link" ;;
+    directory-link) ln -s "$tree" "$invalid_tree/link" ;;
+    dangling-link) ln -s "$FIXTURE_ROOT/absent" "$invalid_tree/link" ;;
+    fifo) mkfifo "$invalid_tree/pipe" ;;
+    control-file) printf x > "$invalid_tree/"$'bad\nfile' ;;
+    control-directory) mkdir "$invalid_tree/"$'bad\tdirectory' ;;
+    invalid-file) printf x > "$invalid_tree/"$'invalid-\xff' ;;
+    invalid-directory) mkdir "$invalid_tree/"$'invalid-\xff' ;;
+  esac
+  check_invalid_call directory "$invalid_tree" index.html
+done
+check_invalid_call directory "$FIXTURE_ROOT/tree-directory-link" "link/$primary"
+ln -s "$tree" "$FIXTURE_ROOT/tree-root-link"
+check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/" "$primary"
+check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/." "$primary"
+scenario 'configured publication accepts a prepared tree through a source ancestor symlink'
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" ancestor-directory "$FIXTURE_ROOT/tree-root-link/pages é" 'report #?%.html')"
+[[ "$(jq -r .status <<<"$output")" == published ]] || fail "tree ancestor symlink prevented publication: $output"
+ancestor_path="$(jq -r .path <<<"$output")"
+[[ "$ancestor_path" == "$publish_root/"* ]] || fail 'ancestor tree escaped publishing root'
+diff -r "$tree/pages é" "${ancestor_path%/*}" || fail 'ancestor tree copy changed'
+
+scenario 'unreadable directory entries fail publication without a success result'
+unreadable_tree="$FIXTURE_ROOT/unreadable-tree"; mkdir -p "$unreadable_tree/closed"
+printf x > "$unreadable_tree/index.html"; chmod 000 "$unreadable_tree/closed"
+set +e
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory "$unreadable_tree" index.html)"; status=$?
+set -e
+chmod 700 "$unreadable_tree/closed"
+[[ "$status" -eq 5 ]] || fail 'unreadable tree did not fail publication'
+assert_error publication "$output"
+
+scenario 'concurrent directory publications preserve complete independent copies'
+pids=(); outputs=()
+for i in {1..8}; do
+  result="$FIXTURE_ROOT/concurrent-tree-$i.json"; outputs+=("$result")
+  (cd "$git_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$concurrent_config" "$PUBLISHER" directory "$tree" "$primary" > "$result") & pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid" || fail 'concurrent directory invocation failed'; done
+paths="$FIXTURE_ROOT/tree-paths"
+for result in "${outputs[@]}"; do jq -r .path "$result"; done > "$paths"
+[[ "$(sort -u "$paths" | wc -l)" -eq 8 ]] || fail 'directory generation collision occurred'
+while IFS= read -r path; do diff -r "$tree" "${path%/"$primary"}" || fail 'concurrent tree copy changed'; done < "$paths"
+
+scenario 'source and publication storage reject overlap without changing either tree'
+for overlap_kind in root-inside-source source-inside-root file-inside-root same-location root-alias-inside-source root-alias-contains-source root-alias-same-location normalized-root normalized-source source-alias-inside-root source-alias-contains-root filesystem-root filesystem-source; do
+  overlap_base="$FIXTURE_ROOT/overlap-$overlap_kind"
+  mkdir -p "$overlap_base/prepared/web" "$overlap_base/prepared/nested"
+  printf primary > "$overlap_base/prepared/index.html"
+  printf nested > "$overlap_base/prepared/nested/index.html"
+  overlap_source="$overlap_base/prepared"
+  overlap_root="$overlap_source/web"
+  overlap_primary=index.html
+  case "$overlap_kind" in
+    source-inside-root) overlap_root="$overlap_base" ;;
+    file-inside-root) overlap_root="$overlap_source"; overlap_source+='/index.html' ;;
+    same-location) overlap_root="$overlap_source" ;;
+    root-alias-inside-source) ln -s "$overlap_root" "$overlap_base/alias"; overlap_root="$overlap_base/alias" ;;
+    root-alias-contains-source) ln -s "$overlap_base" "$overlap_base/alias"; overlap_root="$overlap_base/alias" ;;
+    root-alias-same-location) ln -s "$overlap_source" "$overlap_base/alias"; overlap_root="$overlap_base/alias" ;;
+    source-alias-inside-root) ln -s "$overlap_base" "$overlap_base/alias"; overlap_root="$overlap_base/prepared"; overlap_source="$overlap_base/alias/prepared/nested" ;;
+    source-alias-contains-root) ln -s "$overlap_base" "$overlap_base/alias"; overlap_source="$overlap_base/alias/prepared" ;;
+    normalized-root) overlap_root="$overlap_source/nested/../web/." ;;
+    normalized-source) overlap_source+='/nested/../.' ;;
+    filesystem-root) overlap_root=/ ;;
+    filesystem-source) overlap_primary="${overlap_source#/}/index.html"; overlap_source=/ ;;
+  esac
+  overlap_config="$FIXTURE_ROOT/overlap.json"
+  write_config "$overlap_config" "$overlap_root" 'https://example.test/overlap'
+  overlap_before="$FIXTURE_ROOT/before-$overlap_kind"
+  cp -a -- "$overlap_base" "$overlap_before"
+  set +e
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$overlap_config" "$PUBLISHER" directory "$overlap_source" "$overlap_primary")"; status=$?
+  set -e
+  [[ "$status" -eq 2 ]] || fail "$overlap_kind did not fail as an invalid call: $output"
+  assert_error invalid-call "$output"
+  [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'overlap error was not one JSON line'
+  diff -r --no-dereference "$overlap_before" "$overlap_base" || fail "$overlap_kind modified source or publication storage"
+done
+
+scenario 'repeated publication cannot ingest previously published generations'
+enclosing_tree="$FIXTURE_ROOT/enclosing-tree"; mkdir -p "$enclosing_tree/web"
+printf primary > "$enclosing_tree/index.html"
+enclosing_config="$FIXTURE_ROOT/enclosing.json"; write_config "$enclosing_config" "$enclosing_tree/web" 'https://example.test/enclosing'
+# Seed a real generation from a disjoint file before attempting the enclosing tree.
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory "$enclosing_tree/index.html" index.html)"
+[[ "$(jq -r .status <<<"$output")" == published ]] || fail 'seed publication failed'
+enclosing_before="$FIXTURE_ROOT/enclosing-before"
+cp -a -- "$enclosing_tree" "$enclosing_before"
+for attempt in 1 2; do
+  set +e
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory "$enclosing_tree" index.html)"; status=$?
+  set -e
+  [[ "$status" -eq 2 ]] || fail "enclosing publication $attempt ingested publication storage: $output"
+  assert_error invalid-call "$output"
+  diff -r "$enclosing_before" "$enclosing_tree" || fail 'repeated publication changed the prepared tree or previous generations'
+done
+
+scenario 'disjoint sibling paths with shared prefixes remain publishable'
+for sibling_kind in root-prefix source-prefix; do
+  sibling_base="$FIXTURE_ROOT/sibling-$sibling_kind"; mkdir "$sibling_base"
+  sibling_source="$sibling_base/artifact"; sibling_root="$sibling_base/artifacts"
+  if [[ "$sibling_kind" == root-prefix ]]; then
+    sibling_source="$sibling_base/artifacts"; sibling_root="$sibling_base/artifact"
+  fi
+  mkdir "$sibling_source" "$sibling_root"
+  printf primary > "$sibling_source/index.html"
+  sibling_config="$FIXTURE_ROOT/sibling.json"; write_config "$sibling_config" "$sibling_root" 'https://example.test/sibling'
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$sibling_config" "$PUBLISHER" directory "$sibling_source" index.html)"
+  [[ "$(jq -r .status <<<"$output")" == published ]] || fail "disjoint $sibling_kind publication failed"
+  diff -r "$sibling_source" "$(dirname "$(jq -r .path <<<"$output")")" || fail 'sibling tree copy changed'
+done
+
+scenario 'configuration changes during directory publication apply only to the next invocation'
+snapshot_config="$FIXTURE_ROOT/snapshot.json"; replacement_config="$FIXTURE_ROOT/replacement.json"
+snapshot_root="$FIXTURE_ROOT/snapshot-root"; replacement_root="$FIXTURE_ROOT/replacement-root"
+mkdir "$snapshot_root" "$replacement_root"
+write_config "$snapshot_config" "$snapshot_root" 'https://example.test/snapshot'
+write_config "$replacement_config" "$replacement_root" 'https://example.test/replacement'
+snapshot_bin="$FIXTURE_ROOT/snapshot-bin"; mkdir "$snapshot_bin"
+printf '%s\n' '#!/usr/bin/env bash' 'set -e' \
+  "/bin/cp -- $(printf '%q' "$replacement_config") $(printf '%q' "$snapshot_config")" \
+  'exec /bin/cp "$@"' > "$snapshot_bin/cp"
+chmod +x "$snapshot_bin/cp"
+output="$(cd "$repo" && PATH="$snapshot_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory "$tree" "$primary")"
+[[ "$(jq -r .path <<<"$output")" == "$snapshot_root/"* && "$(jq -r .url <<<"$output")" == https://example.test/snapshot/* ]] \
+  || fail "one publication mixed configurations: $output"
+snapshot_path="$(jq -r .path <<<"$output")"
+diff -r "$tree" "${snapshot_path%/"$primary"}" || fail 'configuration change split the first published tree'
+[[ -z "$(find "$replacement_root" -mindepth 1 -print -quit)" ]] || fail 'first publication wrote beneath the replacement root'
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory "$tree" "$primary")"
+[[ "$(jq -r .path <<<"$output")" == "$replacement_root/"* && "$(jq -r .url <<<"$output")" == https://example.test/replacement/* ]] \
+  || fail 'next directory publication did not reread configuration'
+replacement_path="$(jq -r .path <<<"$output")"
+diff -r "$tree" "${replacement_path%/"$primary"}" || fail 'next publication did not copy the complete tree under the replacement root'
+
+scenario 'a partial directory copy failure cleans only its generation and reports failed cleanup'
+partial_bin="$FIXTURE_ROOT/partial-bin"; mkdir "$partial_bin"
+copy_count="$FIXTURE_ROOT/partial-copy-count"
+printf '%s\n' '#!/usr/bin/env bash' \
+  "if [[ -e $(printf '%q' "$copy_count") ]]; then exit 71; fi" \
+  "touch $(printf '%q' "$copy_count")" 'exec /bin/cp "$@"' > "$partial_bin/cp"
+chmod +x "$partial_bin/cp"
+for cleanup_fails in false true; do
+  rm -f "$copy_count"
+  if [[ "$cleanup_fails" == true ]]; then
+    printf '#!/usr/bin/env bash\nexit 72\n' > "$partial_bin/rm"; chmod +x "$partial_bin/rm"
+  fi
+  set +e
+  output="$(cd "$repo" && PATH="$partial_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory "$tree" "$primary")"; status=$?
+  set -e
+  [[ "$status" -eq 5 ]] || fail 'partial directory copy did not fail publication'
+  assert_error publication "$output"
+  diff -r "$tree" "$tree_generation" || fail 'directory cleanup modified a previous generation'
+  residual="$(jq -r '.residualPath // empty' <<<"$output")"
+  if [[ "$cleanup_fails" == true ]]; then
+    [[ "$residual" == "$publish_root/unconfigured-repo/directory/"* && -d "$residual" ]] || fail 'directory cleanup failure lost residual path'
+    [[ -n "$(find "$residual" -type f -print -quit)" ]] || fail 'failure did not exercise a partial copy'
+  else
+    [[ -z "$residual" ]] || fail 'successful directory cleanup reported residue'
+    [[ "$(find "$publish_root/unconfigured-repo/directory" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]] || fail 'failed directory copy left a generation'
+  fi
+done
 
 printf 'All publish-artifact scenarios passed.\n'

@@ -17,4 +17,6 @@ An absent default file produces `unconfigured`. A selected missing file, an unre
 
 Publication runs on Linux with Bash and `jq`. A linked worktree also needs Git to derive its primary-checkout group; outside Git, the invocation-directory name is the fallback.
 
+Directory listings and a fixed primary filename are not required.
+
 The host owns root creation, modes, ownership, serving, access control, and retention. The publisher leaves those properties unchanged, treats artifact content as opaque, and constructs the URL without checking HTTP reachability.
