@@ -391,4 +391,126 @@ residual="$(jq -r .residualPath <<<"$output")"
 [[ "$residual" == "$compound_root"/* && -d "$residual" ]] || fail "compound failure lost exact residual path: $output"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'compound failure did not emit exactly one JSON line'
 
+scenario 'directory publication copies the complete prepared tree and returns its nested primary URL'
+tree="$FIXTURE_ROOT/prepared-tree"
+primary='pages é/report #?%.html'
+mkdir -p "$tree/pages é" "$tree/assets/icons" "$tree/empty" "$tree/.hidden"
+printf '<h1>directory report</h1>\n' > "$tree/$primary"
+printf 'body { color: blue; }\n' > "$tree/assets/style.css"
+printf '\000\001\377' > "$tree/assets/icons/opaque.bin"
+printf private-name-not-filtered > "$tree/.hidden/config"
+printf ignored-by-publisher > "$tree/.gitignore"
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory "$tree/" "$primary")"
+tree_path="$(jq -r .path <<<"$output")"
+tree_generation="${tree_path%/"$primary"}"
+[[ "$(jq -r .url <<<"$output")" == https://artifacts.example.test/public/*/directory/*/pages%20%C3%A9/report%20%23%3F%25.html ]] \
+  || fail "nested primary URL did not encode each segment: $output"
+diff -r "$tree" "$tree_generation" || fail 'directory publication changed or filtered the prepared tree'
+[[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'directory success was not one JSON line'
+
+scenario 'directory primary paths must be contained regular files without traversal'
+for bad_primary in /etc/passwd ../outside.html 'pages é/../../outside.html' 'pages é/../pages é/report #?%.html' './pages é/report #?%.html' 'pages é//report #?%.html' 'pages é/' assets missing.html; do
+  check_invalid_call directory "$tree" "$bad_primary"
+done
+
+scenario 'all directory entries reject symlinks special files and invalid path bytes'
+for bad_kind in file-link directory-link dangling-link fifo control-file control-directory invalid-file invalid-directory; do
+  invalid_tree="$FIXTURE_ROOT/tree-$bad_kind"; mkdir "$invalid_tree"
+  printf primary > "$invalid_tree/index.html"
+  case "$bad_kind" in
+    file-link) ln -s "$source_file" "$invalid_tree/link" ;;
+    directory-link) ln -s "$tree" "$invalid_tree/link" ;;
+    dangling-link) ln -s "$FIXTURE_ROOT/absent" "$invalid_tree/link" ;;
+    fifo) mkfifo "$invalid_tree/pipe" ;;
+    control-file) printf x > "$invalid_tree/"$'bad\nfile' ;;
+    control-directory) mkdir "$invalid_tree/"$'bad\tdirectory' ;;
+    invalid-file) printf x > "$invalid_tree/"$'invalid-\xff' ;;
+    invalid-directory) mkdir "$invalid_tree/"$'invalid-\xff' ;;
+  esac
+  check_invalid_call directory "$invalid_tree" index.html
+done
+check_invalid_call directory "$FIXTURE_ROOT/tree-directory-link" "link/$primary"
+ln -s "$tree" "$FIXTURE_ROOT/tree-root-link"
+check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/" "$primary"
+check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/." "$primary"
+check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/pages é" 'report #?%.html'
+
+scenario 'unreadable directory entries fail publication without a success result'
+unreadable_tree="$FIXTURE_ROOT/unreadable-tree"; mkdir -p "$unreadable_tree/closed"
+printf x > "$unreadable_tree/index.html"; chmod 000 "$unreadable_tree/closed"
+set +e
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory "$unreadable_tree" index.html)"; status=$?
+set -e
+chmod 700 "$unreadable_tree/closed"
+[[ "$status" -eq 5 ]] || fail 'unreadable tree did not fail publication'
+assert_error publication "$output"
+
+scenario 'concurrent directory publications preserve complete independent copies'
+pids=(); outputs=()
+for i in {1..8}; do
+  result="$FIXTURE_ROOT/concurrent-tree-$i.json"; outputs+=("$result")
+  (cd "$git_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$concurrent_config" "$PUBLISHER" directory "$tree" "$primary" > "$result") & pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid" || fail 'concurrent directory invocation failed'; done
+paths="$FIXTURE_ROOT/tree-paths"
+for result in "${outputs[@]}"; do jq -r .path "$result"; done > "$paths"
+[[ "$(sort -u "$paths" | wc -l)" -eq 8 ]] || fail 'directory generation collision occurred'
+while IFS= read -r path; do diff -r "$tree" "${path%/"$primary"}" || fail 'concurrent tree copy changed'; done < "$paths"
+
+scenario 'a directory source containing its publishing root does not copy newly allocated generations'
+enclosing_tree="$FIXTURE_ROOT/enclosing-tree"; mkdir -p "$enclosing_tree/web"
+printf primary > "$enclosing_tree/index.html"
+enclosing_config="$FIXTURE_ROOT/enclosing.json"; write_config "$enclosing_config" "$enclosing_tree/web" 'https://example.test/enclosing'
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory "$enclosing_tree" index.html)"
+enclosing_generation="$(dirname "$(jq -r .path <<<"$output")")"
+[[ -d "$enclosing_generation/web" ]] || fail 'empty source directory was omitted'
+[[ -z "$(find "$enclosing_generation/web" -mindepth 1 -print -quit)" ]] || fail 'publisher recursively copied its new generation'
+
+scenario 'configuration changes during directory publication apply only to the next invocation'
+snapshot_config="$FIXTURE_ROOT/snapshot.json"; replacement_config="$FIXTURE_ROOT/replacement.json"
+snapshot_root="$FIXTURE_ROOT/snapshot-root"; replacement_root="$FIXTURE_ROOT/replacement-root"
+mkdir "$snapshot_root" "$replacement_root"
+write_config "$snapshot_config" "$snapshot_root" 'https://example.test/snapshot'
+write_config "$replacement_config" "$replacement_root" 'https://example.test/replacement'
+snapshot_bin="$FIXTURE_ROOT/snapshot-bin"; mkdir "$snapshot_bin"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'for argument in "$@"; do' \
+  "  if [[ \"\$argument\" == .directory ]]; then /bin/cp -- $(printf '%q' "$replacement_config") $(printf '%q' "$snapshot_config"); fi" \
+  'done' "exec $(printf '%q' "$real_jq") \"\$@\"" > "$snapshot_bin/jq"
+chmod +x "$snapshot_bin/jq"
+output="$(cd "$repo" && PATH="$snapshot_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory "$tree" "$primary")"
+[[ "$(jq -r .path <<<"$output")" == "$snapshot_root/"* && "$(jq -r .url <<<"$output")" == https://example.test/snapshot/* ]] \
+  || fail "one publication mixed configurations: $output"
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory "$tree" "$primary")"
+[[ "$(jq -r .path <<<"$output")" == "$replacement_root/"* && "$(jq -r .url <<<"$output")" == https://example.test/replacement/* ]] \
+  || fail 'next directory publication did not reread configuration'
+
+scenario 'a partial directory copy failure cleans only its generation and reports failed cleanup'
+partial_bin="$FIXTURE_ROOT/partial-bin"; mkdir "$partial_bin"
+copy_count="$FIXTURE_ROOT/partial-copy-count"
+printf '%s\n' '#!/usr/bin/env bash' \
+  "if [[ -e $(printf '%q' "$copy_count") ]]; then exit 71; fi" \
+  "touch $(printf '%q' "$copy_count")" 'exec /bin/cp "$@"' > "$partial_bin/cp"
+chmod +x "$partial_bin/cp"
+for cleanup_fails in false true; do
+  rm -f "$copy_count"
+  if [[ "$cleanup_fails" == true ]]; then
+    printf '#!/usr/bin/env bash\nexit 72\n' > "$partial_bin/rm"; chmod +x "$partial_bin/rm"
+  fi
+  set +e
+  output="$(cd "$repo" && PATH="$partial_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory "$tree" "$primary")"; status=$?
+  set -e
+  [[ "$status" -eq 5 ]] || fail 'partial directory copy did not fail publication'
+  assert_error publication "$output"
+  diff -r "$tree" "$tree_generation" || fail 'directory cleanup modified a previous generation'
+  residual="$(jq -r '.residualPath // empty' <<<"$output")"
+  if [[ "$cleanup_fails" == true ]]; then
+    [[ "$residual" == "$publish_root/unconfigured-repo/directory/"* && -d "$residual" ]] || fail 'directory cleanup failure lost residual path'
+    [[ -n "$(find "$residual" -type f -print -quit)" ]] || fail 'failure did not exercise a partial copy'
+  else
+    [[ -z "$residual" ]] || fail 'successful directory cleanup reported residue'
+    [[ "$(find "$publish_root/unconfigured-repo/directory" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]] || fail 'failed directory copy left a generation'
+  fi
+done
+
 printf 'All publish-artifact scenarios passed.\n'
