@@ -78,12 +78,12 @@ generation="$(basename "$(dirname "$published_path")")"
 [[ "$generation" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{24}$ ]] || fail "generation is not timestamped and collision resistant: $generation"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'success result was not one line'
 
-scenario 'configured publication still refuses a source ancestor symlink'
-set +e
-output="$(invoke "$repo" "$home" architecture-report "$source_parent_link/report.html" report.html)"; status=$?
-set -e
-[[ "$status" -ne 0 ]] || fail 'configured source ancestor symlink succeeded'
-assert_error invalid-call "$output"
+scenario 'configured publication accepts a regular file through a source ancestor symlink'
+output="$(invoke "$repo" "$home" architecture-report "$source_parent_link/report.html" report.html)"
+[[ "$(jq -r .status <<<"$output")" == published ]] || fail "ancestor symlink prevented publication: $output"
+ancestor_path="$(jq -r .path <<<"$output")"
+[[ "$ancestor_path" == "$publish_root/"* ]] || fail 'ancestor source escaped publishing root'
+cmp -s "$source_parent/report.html" "$ancestor_path" || fail 'ancestor source bytes changed'
 
 scenario 'a selected configuration overrides the default and is reread next invocation'
 selected_root="$FIXTURE_ROOT/selected"; next_root="$FIXTURE_ROOT/next"; mkdir -p "$selected_root" "$next_root"
@@ -460,7 +460,12 @@ check_invalid_call directory "$FIXTURE_ROOT/tree-directory-link" "link/$primary"
 ln -s "$tree" "$FIXTURE_ROOT/tree-root-link"
 check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/" "$primary"
 check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/." "$primary"
-check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/pages é" 'report #?%.html'
+scenario 'configured publication accepts a prepared tree through a source ancestor symlink'
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" ancestor-directory "$FIXTURE_ROOT/tree-root-link/pages é" 'report #?%.html')"
+[[ "$(jq -r .status <<<"$output")" == published ]] || fail "tree ancestor symlink prevented publication: $output"
+ancestor_path="$(jq -r .path <<<"$output")"
+[[ "$ancestor_path" == "$publish_root/"* ]] || fail 'ancestor tree escaped publishing root'
+diff -r "$tree/pages é" "${ancestor_path%/*}" || fail 'ancestor tree copy changed'
 
 scenario 'unreadable directory entries fail publication without a success result'
 unreadable_tree="$FIXTURE_ROOT/unreadable-tree"; mkdir -p "$unreadable_tree/closed"
@@ -485,7 +490,7 @@ for result in "${outputs[@]}"; do jq -r .path "$result"; done > "$paths"
 while IFS= read -r path; do diff -r "$tree" "${path%/"$primary"}" || fail 'concurrent tree copy changed'; done < "$paths"
 
 scenario 'source and publication storage reject overlap without changing either tree'
-for overlap_kind in root-inside-source source-inside-root file-inside-root same-location root-alias-inside-source root-alias-contains-source root-alias-same-location normalized-root normalized-source filesystem-root filesystem-source; do
+for overlap_kind in root-inside-source source-inside-root file-inside-root same-location root-alias-inside-source root-alias-contains-source root-alias-same-location normalized-root normalized-source source-alias-inside-root source-alias-contains-root filesystem-root filesystem-source; do
   overlap_base="$FIXTURE_ROOT/overlap-$overlap_kind"
   mkdir -p "$overlap_base/prepared/web" "$overlap_base/prepared/nested"
   printf primary > "$overlap_base/prepared/index.html"
@@ -500,6 +505,8 @@ for overlap_kind in root-inside-source source-inside-root file-inside-root same-
     root-alias-inside-source) ln -s "$overlap_root" "$overlap_base/alias"; overlap_root="$overlap_base/alias" ;;
     root-alias-contains-source) ln -s "$overlap_base" "$overlap_base/alias"; overlap_root="$overlap_base/alias" ;;
     root-alias-same-location) ln -s "$overlap_source" "$overlap_base/alias"; overlap_root="$overlap_base/alias" ;;
+    source-alias-inside-root) ln -s "$overlap_base" "$overlap_base/alias"; overlap_root="$overlap_base/prepared"; overlap_source="$overlap_base/alias/prepared/nested" ;;
+    source-alias-contains-root) ln -s "$overlap_base" "$overlap_base/alias"; overlap_source="$overlap_base/alias/prepared" ;;
     normalized-root) overlap_root="$overlap_source/nested/../web/." ;;
     normalized-source) overlap_source+='/nested/../.' ;;
     filesystem-root) overlap_root=/ ;;

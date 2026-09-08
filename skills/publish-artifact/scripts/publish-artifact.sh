@@ -21,7 +21,11 @@ producer="$1"; source_path="$2"; primary_path="$3"
 
 [[ "$producer" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
   || fixed_error invalid-call 'producer must be a lowercase slug' 2
-while [[ "$source_path" != / && "$source_path" == */ ]]; do source_path="${source_path%/}"; done
+# Remove trailing directory syntax without resolving the source entry itself.
+while [[ "$source_path" != / && ( "$source_path" == */ || "$source_path" == */. ) ]]; do
+  source_path="${source_path%/}"; source_path="${source_path%/.}"
+  [[ -n "$source_path" ]] || source_path=/
+done
 [[ "$source_path" == /* && ( -f "$source_path" || -d "$source_path" ) && ! -L "$source_path" ]] \
   || fixed_error invalid-call 'source must be an absolute regular file or directory, not a symlink' 2
 safe_relative_path() {
@@ -59,15 +63,6 @@ if [[ "$selector_set" == false && ! -e "$config_path" && ! -L "$config_path" ]];
 fi
 [[ -f "$config_path" && -r "$config_path" ]] \
   || fixed_error configuration 'artifact configuration is missing, unreadable, or not a regular file' 3
-
-source_ancestor=''; source_remainder="${source_path#/}"
-while [[ -n "$source_remainder" ]]; do
-  source_segment="${source_remainder%%/*}"
-  source_ancestor+="/$source_segment"
-  [[ ! -L "$source_ancestor" ]] || fixed_error invalid-call 'source symlinks are not supported' 2
-  [[ "$source_remainder" == */* ]] || break
-  source_remainder="${source_remainder#*/}"
-done
 
 command -v jq >/dev/null 2>&1 \
   || fixed_error dependency 'jq is required when artifact publication is configured' 4

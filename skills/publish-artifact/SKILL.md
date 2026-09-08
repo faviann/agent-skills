@@ -18,7 +18,7 @@ Publish one completed regular file or prepared directory tree for remote browser
 
    Use a stable lowercase producer slug such as `architecture-report`. For a file, pass its basename as the relative primary path; for a directory, pass the path of one contained regular file relative to that directory. The working directory supplies repository context.
 
-   Source trees contain only real directories and regular files with valid UTF-8 names. Primary paths are relative and free of traversal and control characters. Source symlinks and special filesystem entries are refused.
+   Source trees contain only real directories and regular files with valid UTF-8 names. Primary paths are relative and free of traversal and control characters. Symlinked ancestors outside the source are allowed. Symlinks at the source itself or within its tree and special filesystem entries are refused.
 
    Preparation space and publication space must not overlap: the source and configured publishing root must resolve to separate locations, with neither containing the other. The command rejects overlap as `invalid-call` before writing.
 
