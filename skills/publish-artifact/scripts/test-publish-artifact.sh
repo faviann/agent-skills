@@ -484,14 +484,72 @@ for result in "${outputs[@]}"; do jq -r .path "$result"; done > "$paths"
 [[ "$(sort -u "$paths" | wc -l)" -eq 8 ]] || fail 'directory generation collision occurred'
 while IFS= read -r path; do diff -r "$tree" "${path%/"$primary"}" || fail 'concurrent tree copy changed'; done < "$paths"
 
-scenario 'a directory source containing its publishing root does not copy newly allocated generations'
+scenario 'source and publication storage reject overlap without changing either tree'
+for overlap_kind in root-inside-source source-inside-root file-inside-root same-location root-alias-inside-source root-alias-contains-source root-alias-same-location normalized-root normalized-source filesystem-root filesystem-source; do
+  overlap_base="$FIXTURE_ROOT/overlap-$overlap_kind"
+  mkdir -p "$overlap_base/prepared/web" "$overlap_base/prepared/nested"
+  printf primary > "$overlap_base/prepared/index.html"
+  printf nested > "$overlap_base/prepared/nested/index.html"
+  overlap_source="$overlap_base/prepared"
+  overlap_root="$overlap_source/web"
+  overlap_primary=index.html
+  case "$overlap_kind" in
+    source-inside-root) overlap_root="$overlap_base" ;;
+    file-inside-root) overlap_root="$overlap_source"; overlap_source+='/index.html' ;;
+    same-location) overlap_root="$overlap_source" ;;
+    root-alias-inside-source) ln -s "$overlap_root" "$overlap_base/alias"; overlap_root="$overlap_base/alias" ;;
+    root-alias-contains-source) ln -s "$overlap_base" "$overlap_base/alias"; overlap_root="$overlap_base/alias" ;;
+    root-alias-same-location) ln -s "$overlap_source" "$overlap_base/alias"; overlap_root="$overlap_base/alias" ;;
+    normalized-root) overlap_root="$overlap_source/nested/../web/." ;;
+    normalized-source) overlap_source+='/nested/../.' ;;
+    filesystem-root) overlap_root=/ ;;
+    filesystem-source) overlap_primary="${overlap_source#/}/index.html"; overlap_source=/ ;;
+  esac
+  overlap_config="$FIXTURE_ROOT/overlap.json"
+  write_config "$overlap_config" "$overlap_root" 'https://example.test/overlap'
+  overlap_before="$FIXTURE_ROOT/before-$overlap_kind"
+  cp -a -- "$overlap_base" "$overlap_before"
+  set +e
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$overlap_config" "$PUBLISHER" directory "$overlap_source" "$overlap_primary")"; status=$?
+  set -e
+  [[ "$status" -eq 2 ]] || fail "$overlap_kind did not fail as an invalid call: $output"
+  assert_error invalid-call "$output"
+  [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'overlap error was not one JSON line'
+  diff -r --no-dereference "$overlap_before" "$overlap_base" || fail "$overlap_kind modified source or publication storage"
+done
+
+scenario 'repeated publication cannot ingest previously published generations'
 enclosing_tree="$FIXTURE_ROOT/enclosing-tree"; mkdir -p "$enclosing_tree/web"
 printf primary > "$enclosing_tree/index.html"
 enclosing_config="$FIXTURE_ROOT/enclosing.json"; write_config "$enclosing_config" "$enclosing_tree/web" 'https://example.test/enclosing'
-output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory "$enclosing_tree" index.html)"
-enclosing_generation="$(dirname "$(jq -r .path <<<"$output")")"
-[[ -d "$enclosing_generation/web" ]] || fail 'empty source directory was omitted'
-[[ -z "$(find "$enclosing_generation/web" -mindepth 1 -print -quit)" ]] || fail 'publisher recursively copied its new generation'
+# Seed a real generation from a disjoint file before attempting the enclosing tree.
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory "$enclosing_tree/index.html" index.html)"
+[[ "$(jq -r .status <<<"$output")" == published ]] || fail 'seed publication failed'
+enclosing_before="$FIXTURE_ROOT/enclosing-before"
+cp -a -- "$enclosing_tree" "$enclosing_before"
+for attempt in 1 2; do
+  set +e
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory "$enclosing_tree" index.html)"; status=$?
+  set -e
+  [[ "$status" -eq 2 ]] || fail "enclosing publication $attempt ingested publication storage: $output"
+  assert_error invalid-call "$output"
+  diff -r "$enclosing_before" "$enclosing_tree" || fail 'repeated publication changed the prepared tree or previous generations'
+done
+
+scenario 'disjoint sibling paths with shared prefixes remain publishable'
+for sibling_kind in root-prefix source-prefix; do
+  sibling_base="$FIXTURE_ROOT/sibling-$sibling_kind"; mkdir "$sibling_base"
+  sibling_source="$sibling_base/artifact"; sibling_root="$sibling_base/artifacts"
+  if [[ "$sibling_kind" == root-prefix ]]; then
+    sibling_source="$sibling_base/artifacts"; sibling_root="$sibling_base/artifact"
+  fi
+  mkdir "$sibling_source" "$sibling_root"
+  printf primary > "$sibling_source/index.html"
+  sibling_config="$FIXTURE_ROOT/sibling.json"; write_config "$sibling_config" "$sibling_root" 'https://example.test/sibling'
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$sibling_config" "$PUBLISHER" directory "$sibling_source" index.html)"
+  [[ "$(jq -r .status <<<"$output")" == published ]] || fail "disjoint $sibling_kind publication failed"
+  diff -r "$sibling_source" "$(dirname "$(jq -r .path <<<"$output")")" || fail 'sibling tree copy changed'
+done
 
 scenario 'configuration changes during directory publication apply only to the next invocation'
 snapshot_config="$FIXTURE_ROOT/snapshot.json"; replacement_config="$FIXTURE_ROOT/replacement.json"

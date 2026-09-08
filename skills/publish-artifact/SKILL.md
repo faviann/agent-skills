@@ -20,6 +20,8 @@ Publish one completed regular file or prepared directory tree for remote browser
 
    Source trees contain only real directories and regular files with valid UTF-8 names. Primary paths are relative and free of traversal and control characters. Source symlinks and special filesystem entries are refused.
 
+   Preparation space and publication space must not overlap: the source and configured publishing root must resolve to separate locations, with neither containing the other. The command rejects overlap as `invalid-call` before writing.
+
 3. Read the single JSON result and finish according to its `status`:
 
    - `published` — return its `path` and `url` without an HTTP verification request.

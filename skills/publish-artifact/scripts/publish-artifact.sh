@@ -270,6 +270,22 @@ valid_utf8() { printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; }
 valid_utf8 "$primary_path" || json_error invalid-call 'primary name must be valid UTF-8' 2
 [[ ! "$primary_path" =~ [[:cntrl:]] ]] || json_error invalid-call 'primary name must not contain control characters' 2
 
+if ! canonical_root="$(realpath -e -- "$configured_root" 2>/dev/null)"; then
+  json_error configuration 'configured directory could not be canonicalized' 3
+fi
+[[ -d "$canonical_root" && ! -L "$canonical_root" ]] \
+  || json_error configuration 'canonical configured root must be a directory' 3
+root_prefix="${canonical_root%/}/"
+
+if ! canonical_source="$(realpath -e -- "$source_path" 2>/dev/null)"; then
+  json_error invalid-call 'source could not be canonicalized' 2
+fi
+if [[ "$canonical_source" == "$canonical_root" ||
+      "$canonical_source" == "$root_prefix"* ||
+      "$canonical_root" == "${canonical_source%/}/"* ]]; then
+  json_error invalid-call 'source and publishing root must not overlap' 2
+fi
+
 # Validate the complete prepared tree before allocating a generation. Keep the
 # source unchanged during publication; this inventory is also the copy set.
 source_entries=(); source_types=()
@@ -302,13 +318,6 @@ if [[ -d "$source_path" ]]; then
 else
   source_entries+=("$primary_path"); source_types+=(file)
 fi
-
-if ! canonical_root="$(realpath -e -- "$configured_root" 2>/dev/null)"; then
-  json_error configuration 'configured directory could not be canonicalized' 3
-fi
-[[ -d "$canonical_root" && ! -L "$canonical_root" ]] \
-  || json_error configuration 'canonical configured root must be a directory' 3
-root_prefix="${canonical_root%/}/"
 
 repository_name="${PWD##*/}"
 git_marker=''
