@@ -36,6 +36,13 @@ output="$(invoke "$repo" "$home" architecture-report "$source_file" "$(basename 
 [[ "$output" == '{"status":"unconfigured"}' ]] || fail "unexpected result: $output"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'unconfigured result was not one line'
 
+scenario 'an absent default configuration preserves handoff through a source ancestor symlink'
+source_parent="$FIXTURE_ROOT/source-parent"; source_parent_link="$FIXTURE_ROOT/source-parent-link"
+mkdir "$source_parent"; ln -s "$source_parent" "$source_parent_link"
+cp -- "$source_file" "$source_parent/report.html"
+output="$(invoke "$repo" "$home" architecture-report "$source_parent_link/report.html" report.html)"
+[[ "$output" == '{"status":"unconfigured"}' ]] || fail "ancestor symlink prevented unconfigured handoff: $output"
+
 scenario 'invalid calls have a stable category'
 set +e
 output="$(invoke "$repo" "$home" Bad-Slug "$source_file" "$(basename "$source_file")")"; status=$?
@@ -70,6 +77,13 @@ relative_published="${published_path#"$publish_root/"}"
 generation="$(basename "$(dirname "$published_path")")"
 [[ "$generation" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{24}$ ]] || fail "generation is not timestamped and collision resistant: $generation"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'success result was not one line'
+
+scenario 'configured publication still refuses a source ancestor symlink'
+set +e
+output="$(invoke "$repo" "$home" architecture-report "$source_parent_link/report.html" report.html)"; status=$?
+set -e
+[[ "$status" -ne 0 ]] || fail 'configured source ancestor symlink succeeded'
+assert_error invalid-call "$output"
 
 scenario 'a selected configuration overrides the default and is reread next invocation'
 selected_root="$FIXTURE_ROOT/selected"; next_root="$FIXTURE_ROOT/next"; mkdir -p "$selected_root" "$next_root"
@@ -408,6 +422,19 @@ tree_generation="${tree_path%/"$primary"}"
 diff -r "$tree" "$tree_generation" || fail 'directory publication changed or filtered the prepared tree'
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'directory success was not one JSON line'
 
+scenario 'inherited glob options preserve the complete prepared tree'
+glob_tree="$FIXTURE_ROOT/glob-tree"; mkdir -p "$glob_tree/empty"
+printf primary > "$glob_tree/*"
+printf asset > "$glob_tree/app.js"
+printf index > "$glob_tree/index.html"
+for inherited_option in SHELLOPTS=noglob BASHOPTS=failglob; do
+  output="$(cd "$repo" && env "$inherited_option" FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" \
+    "$PUBLISHER" inherited-glob "$glob_tree" '*')"
+  [[ "$(jq -r .status <<<"$output")" == published ]] || fail "inherited $inherited_option prevented publication: $output"
+  glob_path="$(jq -r .path <<<"$output")"
+  diff -r "$glob_tree" "${glob_path%/*}" || fail "inherited $inherited_option changed or filtered the prepared tree"
+done
+
 scenario 'directory primary paths must be contained regular files without traversal'
 for bad_primary in /etc/passwd ../outside.html 'pages é/../../outside.html' 'pages é/../pages é/report #?%.html' './pages é/report #?%.html' 'pages é//report #?%.html' 'pages é/' assets missing.html; do
   check_invalid_call directory "$tree" "$bad_primary"
@@ -473,17 +500,21 @@ mkdir "$snapshot_root" "$replacement_root"
 write_config "$snapshot_config" "$snapshot_root" 'https://example.test/snapshot'
 write_config "$replacement_config" "$replacement_root" 'https://example.test/replacement'
 snapshot_bin="$FIXTURE_ROOT/snapshot-bin"; mkdir "$snapshot_bin"
-printf '%s\n' '#!/usr/bin/env bash' \
-  'for argument in "$@"; do' \
-  "  if [[ \"\$argument\" == .directory ]]; then /bin/cp -- $(printf '%q' "$replacement_config") $(printf '%q' "$snapshot_config"); fi" \
-  'done' "exec $(printf '%q' "$real_jq") \"\$@\"" > "$snapshot_bin/jq"
-chmod +x "$snapshot_bin/jq"
+printf '%s\n' '#!/usr/bin/env bash' 'set -e' \
+  "/bin/cp -- $(printf '%q' "$replacement_config") $(printf '%q' "$snapshot_config")" \
+  'exec /bin/cp "$@"' > "$snapshot_bin/cp"
+chmod +x "$snapshot_bin/cp"
 output="$(cd "$repo" && PATH="$snapshot_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory "$tree" "$primary")"
 [[ "$(jq -r .path <<<"$output")" == "$snapshot_root/"* && "$(jq -r .url <<<"$output")" == https://example.test/snapshot/* ]] \
   || fail "one publication mixed configurations: $output"
+snapshot_path="$(jq -r .path <<<"$output")"
+diff -r "$tree" "${snapshot_path%/"$primary"}" || fail 'configuration change split the first published tree'
+[[ -z "$(find "$replacement_root" -mindepth 1 -print -quit)" ]] || fail 'first publication wrote beneath the replacement root'
 output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory "$tree" "$primary")"
 [[ "$(jq -r .path <<<"$output")" == "$replacement_root/"* && "$(jq -r .url <<<"$output")" == https://example.test/replacement/* ]] \
   || fail 'next directory publication did not reread configuration'
+replacement_path="$(jq -r .path <<<"$output")"
+diff -r "$tree" "${replacement_path%/"$primary"}" || fail 'next publication did not copy the complete tree under the replacement root'
 
 scenario 'a partial directory copy failure cleans only its generation and reports failed cleanup'
 partial_bin="$FIXTURE_ROOT/partial-bin"; mkdir "$partial_bin"

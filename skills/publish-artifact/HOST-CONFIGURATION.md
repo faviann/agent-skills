@@ -17,6 +17,6 @@ An absent default file produces `unconfigured`. A selected missing file, an unre
 
 Publication runs on Linux with Bash and `jq`. A linked worktree also needs Git to derive its primary-checkout group; outside Git, the invocation-directory name is the fallback.
 
-Each publication copies one completed file or an entire prepared directory tree into a separate generation, preserving relative paths and empty directories. The returned URL names the selected primary file, with each path segment URL-encoded. Directory listings and a fixed primary filename are not required. Sources contain only real directories and regular files with control-free valid UTF-8 names; source symlinks and special filesystem entries are refused.
+Directory listings and a fixed primary filename are not required.
 
 The host owns root creation, modes, ownership, serving, access control, and retention. The publisher leaves those properties unchanged, treats artifact content as opaque, and constructs the URL without checking HTTP reachability.

@@ -17,32 +17,24 @@ fixed_error() {
 }
 
 [[ "$#" -eq 3 ]] || fixed_error invalid-call 'expected producer, absolute source file or directory, and relative primary path' 2
-producer="$1"; source_file="$2"; primary_name="$3"
+producer="$1"; source_path="$2"; primary_path="$3"
 
 [[ "$producer" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
   || fixed_error invalid-call 'producer must be a lowercase slug' 2
-while [[ "$source_file" != / && "$source_file" == */ ]]; do source_file="${source_file%/}"; done
-[[ "$source_file" == /* && ( -f "$source_file" || -d "$source_file" ) && ! -L "$source_file" ]] \
+while [[ "$source_path" != / && "$source_path" == */ ]]; do source_path="${source_path%/}"; done
+[[ "$source_path" == /* && ( -f "$source_path" || -d "$source_path" ) && ! -L "$source_path" ]] \
   || fixed_error invalid-call 'source must be an absolute regular file or directory, not a symlink' 2
-source_ancestor=''; source_remainder="${source_file#/}"
-while [[ -n "$source_remainder" ]]; do
-  source_segment="${source_remainder%%/*}"
-  source_ancestor+="/$source_segment"
-  [[ ! -L "$source_ancestor" ]] || fixed_error invalid-call 'source symlinks are not supported' 2
-  [[ "$source_remainder" == */* ]] || break
-  source_remainder="${source_remainder#*/}"
-done
 safe_relative_path() {
   [[ -n "$1" && "$1" != /* && "$1" != */ && "$1" != *//* &&
      "/$1/" != */./* && "/$1/" != */../* && ! "$1" =~ [[:cntrl:]] ]]
 }
-safe_relative_path "$primary_name" \
+safe_relative_path "$primary_path" \
   || fixed_error invalid-call 'primary must be a relative path without traversal or control characters' 2
-if [[ -f "$source_file" ]]; then
-  [[ "$primary_name" == "${source_file##*/}" ]] \
+if [[ -f "$source_path" ]]; then
+  [[ "$primary_path" == "${source_path##*/}" ]] \
     || fixed_error invalid-call 'primary name must match the source filename' 2
 else
-  [[ -f "$source_file/$primary_name" && ! -L "$source_file/$primary_name" ]] \
+  [[ -f "$source_path/$primary_path" && ! -L "$source_path/$primary_path" ]] \
     || fixed_error invalid-call 'primary must identify a regular file inside the source directory' 2
 fi
 
@@ -67,6 +59,15 @@ if [[ "$selector_set" == false && ! -e "$config_path" && ! -L "$config_path" ]];
 fi
 [[ -f "$config_path" && -r "$config_path" ]] \
   || fixed_error configuration 'artifact configuration is missing, unreadable, or not a regular file' 3
+
+source_ancestor=''; source_remainder="${source_path#/}"
+while [[ -n "$source_remainder" ]]; do
+  source_segment="${source_remainder%%/*}"
+  source_ancestor+="/$source_segment"
+  [[ ! -L "$source_ancestor" ]] || fixed_error invalid-call 'source symlinks are not supported' 2
+  [[ "$source_remainder" == */* ]] || break
+  source_remainder="${source_remainder#*/}"
+done
 
 command -v jq >/dev/null 2>&1 \
   || fixed_error dependency 'jq is required when artifact publication is configured' 4
@@ -266,8 +267,8 @@ done
 [[ -r /dev/urandom ]] || json_error dependency '/dev/urandom is required' 4
 
 valid_utf8() { printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; }
-valid_utf8 "$primary_name" || json_error invalid-call 'primary name must be valid UTF-8' 2
-[[ ! "$primary_name" =~ [[:cntrl:]] ]] || json_error invalid-call 'primary name must not contain control characters' 2
+valid_utf8 "$primary_path" || json_error invalid-call 'primary name must be valid UTF-8' 2
+[[ ! "$primary_path" =~ [[:cntrl:]] ]] || json_error invalid-call 'primary name must not contain control characters' 2
 
 # Validate the complete prepared tree before allocating a generation. Keep the
 # source unchanged during publication; this inventory is also the copy set.
@@ -292,12 +293,14 @@ validate_tree() {
     fi
   done
 }
-if [[ -d "$source_file" ]]; then
+if [[ -d "$source_path" ]]; then
+  set +f
+  shopt -u failglob
   shopt -s dotglob nullglob
-  validate_tree "$source_file" ''
+  validate_tree "$source_path" ''
   shopt -u dotglob nullglob
 else
-  source_entries+=("$primary_name"); source_types+=(file)
+  source_entries+=("$primary_path"); source_types+=(file)
 fi
 
 if ! canonical_root="$(realpath -e -- "$configured_root" 2>/dev/null)"; then
@@ -396,7 +399,7 @@ publication_failure() {
   fi
 }
 
-destination="$generation_directory/$primary_name"
+destination="$generation_directory/$primary_path"
 for index in "${!source_entries[@]}"; do
   relative="${source_entries[index]}"
   entry_destination="$generation_directory/$relative"
@@ -404,8 +407,8 @@ for index in "${!source_entries[@]}"; do
     ensure_owned_directory "$entry_destination" \
       || publication_failure 'source directory could not be copied'
   else
-    entry_source="$source_file"
-    [[ ! -d "$source_file" ]] || entry_source="$source_file/$relative"
+    entry_source="$source_path"
+    [[ ! -d "$source_path" ]] || entry_source="$source_path/$relative"
     if ! cp -P -T -- "$entry_source" "$entry_destination" >/dev/null 2>&1; then
       publication_failure 'source file could not be copied'
     fi
