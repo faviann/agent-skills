@@ -274,6 +274,20 @@ group_of() { jq -r .path <<<"$1" | sed "s#^$group_root/##" | cut -d/ -f1; }
 [[ "$(group_of "$main_output")" == "$(group_of "$worktree_output")" ]] || fail 'linked worktree grouping differs'
 [[ "$(group_of "$main_output")" != "$(group_of "$other_output")" ]] || fail 'unrelated repository grouping collided'
 
+scenario 'linked worktrees backed by a nested .bare repository use the repository container group'
+bare_container="$FIXTURE_ROOT/bare-project"; bare_repo="$bare_container/.bare"
+bare_worktree="$bare_container/main"; other_bare_worktree="$bare_container/feature"
+mkdir "$bare_container"; git init -q --bare "$bare_repo"
+git --git-dir="$bare_repo" worktree add -q -b bare-artifact-test "$bare_worktree"
+git -C "$bare_worktree" config user.email test@example.test; git -C "$bare_worktree" config user.name Test
+printf x > "$bare_worktree/tracked"; git -C "$bare_worktree" add tracked; git -C "$bare_worktree" commit -qm init
+git --git-dir="$bare_repo" worktree add -q -b other-bare-artifact-test "$other_bare_worktree" bare-artifact-test
+bare_output="$(cd "$bare_worktree" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+other_bare_output="$(cd "$other_bare_worktree" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+[[ "$(group_of "$bare_output")" == bare-project ]] || fail 'nested .bare repository did not use its container group'
+[[ "$(group_of "$other_bare_output")" == bare-project ]] || fail 'nested .bare worktrees did not share their container group'
+[[ ! -e "$group_root/.bare" ]] || fail 'nested .bare repository name leaked into grouping'
+
 scenario 'linked worktrees fail stably rather than grouping by worktree name when Git fails'
 broken_git_bin="$FIXTURE_ROOT/broken-git-bin"; mkdir "$broken_git_bin"
 printf '#!/usr/bin/env bash\nexit 74\n' > "$broken_git_bin/git"; chmod +x "$broken_git_bin/git"

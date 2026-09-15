@@ -330,8 +330,8 @@ git_grouping_derived=false
 if command -v git >/dev/null 2>&1; then
   if common_dir="$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
     if canonical_common="$(realpath -e -- "$common_dir" 2>/dev/null)"; then
-      if [[ "${canonical_common##*/}" == .git ]]; then
-        primary_checkout="${canonical_common%/.git}"
+      if [[ "${canonical_common##*/}" == .git || "${canonical_common##*/}" == .bare ]]; then
+        primary_checkout="${canonical_common%/*}"
         repository_name="${primary_checkout##*/}"
       else
         repository_name="${canonical_common##*/}"
