@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-readonly PUBLISHER="$ROOT/skills/engineering/publish-artifact/scripts/publish-artifact.sh"
+readonly PUBLISHER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/publish-artifact.sh"
 readonly FIXTURE_ROOT="$(mktemp -d)"
 trap 'chmod -R u+rwx "$FIXTURE_ROOT" 2>/dev/null || true; rm -rf "$FIXTURE_ROOT"' EXIT
 
