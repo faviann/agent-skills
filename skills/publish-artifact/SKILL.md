@@ -1,11 +1,11 @@
 ---
 name: publish-artifact
-description: Remote browser access for a completed file or prepared directory tree through a host-configured filesystem-to-HTTP mapping. Use when an agent has produced an artifact on another machine and the person needs its direct URL.
+description: Publish a finished file or directory tree to a URL through a host-configured mapping. Use whenever an agent produces something the person should open in a browser, such as an HTML report or a prototype, including another skill's output and even when nobody asked for a link; when the person asks to publish a file or directory; or when they ask to configure the host mapping.
 ---
 
 # Publish Artifact
 
-Publish one completed regular file or prepared directory tree for remote browser access. The bundled command is the publication seam: it owns configuration, repository grouping, generation allocation, copying, cleanup, URL construction, and result classification. Invoke it directly so every producer gets the same behaviour.
+Publish one completed regular file or prepared directory tree at a URL. The bundled command is the publication seam: it owns configuration, repository grouping, generation allocation, copying, cleanup, URL construction, and result classification. Invoke it directly so every producer gets the same behaviour.
 
 ## Publish from another skill
 
