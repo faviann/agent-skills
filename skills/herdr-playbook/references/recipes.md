@@ -2,7 +2,7 @@
 
 Verified against herdr 0.9.3 in an isolated named session, except where marked. The everyday recipes are in [SKILL.md](../SKILL.md).
 
-Contents: [Socket API](#socket-api) · [Dev environment in one call](#dev-environment-in-one-call) · [Stream events](#stream-events) · [Isolated session](#isolated-session) · [Remote machines](#remote-machines) · [Nested Claude runs](#nested-claude-runs)
+Contents: [Socket API](#socket-api) · [Dev environment in one call](#dev-environment-in-one-call) · [Stream events](#stream-events) · [Isolated session](#isolated-session) · [Remote machines](#remote-machines) · [Nested Claude runs](#nested-claude-runs) · [Other vendors](#other-vendors) · [Sessions](#sessions)
 
 ## Socket API
 
@@ -85,7 +85,7 @@ sleep 2
 
 ## Remote machines
 
-*(help only; the user has no saved machines yet)*
+*(help only; check `herdr machine list --json` for saved machines)*
 
 ```bash
 herdr machine list --json
@@ -108,3 +108,19 @@ env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u HERDR
 ```
 
 Claude Code subagents run no SessionStart hook, so they are unaffected. A helper started with `herdr agent start` gets its own pane, so it is unaffected too.
+
+## Other vendors
+
+Helpers of `--kind codex|opencode|pi|omp` all have herdr integrations here. Their defaults are premium models; cheaper variants *(help)*:
+
+- Codex: `-- -m <model>` or `-- -c model_reasoning_effort=low`
+- OpenCode: `-- -m provider/model`
+- Pi and OMP: `-- --model <pattern> --thinking low`
+
+Interrupt your own agent with `herdr agent send-keys <name> esc` or `ctrl+c`; rename it with `herdr agent rename <name> <new>`.
+
+## Sessions
+
+- `herdr session list --json` lists sessions. Collie shows every session under the user's home on the phone, named ones included.
+- `herdr api schema --json | jq '.schemas.request.oneOf[].properties.method.const'` lists every socket method.
+- `herdr --skill` is upstream's reference for mechanics.
