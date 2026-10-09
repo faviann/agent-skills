@@ -2,7 +2,7 @@
 
 Verified against herdr 0.9.3 in an isolated named session, except where marked. The everyday recipes are in [SKILL.md](../SKILL.md).
 
-Contents: [Socket API](#socket-api) · [Dev environment in one call](#dev-environment-in-one-call) · [Stream events](#stream-events) · [Isolated session](#isolated-session) · [Remote machines](#remote-machines) · [Nested Claude runs](#nested-claude-runs) · [Other vendors](#other-vendors) · [Sessions](#sessions)
+Contents: [Socket API](#socket-api) · [Dev environment in one call](#dev-environment-in-one-call) · [Stream events](#stream-events) · [Isolated session](#isolated-session) · [Remote machines](#remote-machines) · [Canvas](#canvas) · [Nested Claude runs](#nested-claude-runs) · [Other vendors](#other-vendors) · [Sessions](#sessions)
 
 ## Socket API
 
@@ -98,6 +98,59 @@ herdr --machine <label-or-id> agent prompt <remote-name> "Reply with your curren
 - **Paths.** Remote worktree paths must be absolute or start with `~/`.
 - **Failures.** A connection failure doesn't prove a mutation failed: inspect before you retry. `machine reconnect` needs the user's SSH authentication.
 - **Adding a machine.** `herdr machine add <ssh-target>` installs and starts herdr on the remote. Suggest it; the user runs it.
+
+## Canvas
+
+The canvas is one pane you draw on with Python. Open it once, redraw it in place, and close it or list it when the work is done.
+
+**Open or reuse.** Look for a pane labeled `canvas` you created this session (`herdr pane list --workspace "$HERDR_WORKSPACE_ID"`). If none, split one off your pane by the direction rule in SKILL.md and `herdr pane rename <id> canvas`. Before each new drawing, stop the previous one with `herdr pane send-keys <id> ctrl+c` (a textual app quits on `q`).
+
+**Rules:**
+
+- **Packages:** only the pinned header below. Any other package is ask-first: `uv` fetches it from PyPI.
+- **Read-only:** the script reads files, herdr, git, or command output, and runs nothing that changes state. The only file an interactive canvas writes is its answer file.
+- **No secrets:** Collie mirrors every pane to the user's phone. Never draw `.env` contents, tokens, or credential output.
+- **Scripts live in their own directory** under `/tmp/canvas-<topic>/`, never in a repository.
+- **Fit the pane:** size to `Console().width` and `.height`. A phone is narrow.
+- **Verify before pointing:** a few seconds after starting, `herdr pane read <id> --source visible --lines 80`. A traceback or an empty panel means fix it first.
+
+**Tested header** (uv 0.12, Python 3.12+):
+
+```python
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["rich==15.0.0", "plotext==5.3.2", "textual==8.2.8"]
+# ///
+```
+
+Keep plotext on 5.3.2: version 6 removed `clf`, `bar`, and `build`.
+
+**One-shot chart.** It prints and exits, and the pane keeps the drawing. Run it with a fresh marker, as for any one-shot job: `herdr pane run <id> "clear; uv run -q --script /tmp/canvas-<topic>/draw.py; echo <tag> exit=\$?"`.
+
+```python
+import plotext as plt
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+
+console = Console()
+plt.clf()
+plt.theme("pro")
+plt.plotsize(console.width - 4, max(10, console.height // 2))
+plt.bar(["before", "after"], [3113, 2464], color="cyan")
+plt.title("SKILL.md words")
+console.print(Panel(Text.from_ansi(plt.build()), title="playbook size"))
+```
+
+**Live view.** Wrap the render in `rich.live.Live(screen=True)` and loop with `time.sleep(3)`, re-reading the data each pass. It runs until `ctrl+c`.
+
+**Ask the user to pick.** `scripts/canvas-ask.py` (in this skill's base directory, run by full path) shows labeled options beside a live preview of the highlighted one. Write the options to `/tmp/canvas-<topic>/options.json` as `[{"label": "...", "preview": "plain text"}]`, then:
+
+```bash
+herdr pane run <id> "clear; <base>/scripts/canvas-ask.py '<question>' /tmp/canvas-<topic>/options.json /tmp/canvas-<topic>/answer.json; echo <tag> asked=\$?"
+```
+
+Wait on `--regex "<tag> asked=[0-9]"` with `pane wait-output` in background Bash. The answer file holds `{"choice": "<label>"}`; no file means the user quit with `q`. Tell the user the question is up and where. Previews are plain text, so `[x]` shows as typed.
 
 ## Nested Claude runs
 
