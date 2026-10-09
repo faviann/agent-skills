@@ -80,6 +80,14 @@ Always pass `--workspace`. Without it, the tab lands in whatever workspace the u
 - **Zoom a pane** for a phone-sized screen with `herdr pane zoom <id> --on|--off`. Zoom also focuses the pane, so offer it rather than doing it.
 - **Take the user there** only when they ask: `herdr agent focus <name>` *(help)*, `herdr tab focus <id>`, `herdr workspace focus <id>`.
 
+**Ask for the user's review.** The `annotator` MCP server, from the File Annotator plugin, opens a diff review pane beside you. The user marks lines from the desktop or phone, and you get their verdict back as JSON. Use it when you finish a change worth a human look, or when the user says they want to review first. Skip it for trivial edits.
+
+- **`mcp__annotator__show_changes`** opens the review without blocking. Pass `note` to say what to check, and `baseline` to set the diff base. Keep working, then call `mcp__annotator__collect_review` (`wait_seconds` 0–120) when the server nudges your pane.
+- **`mcp__annotator__review_changes`** blocks until the verdict arrives. Use it only when you can't continue without the answer. An unanswered review returns `cancelled` after 30 minutes.
+- **The verdict** is `approve`, `request_changes`, `reject`, or `cancelled`. It comes with a `summary` and `annotations` of `{file, lines, side, tag, comment}`, where the tag is `fix`, `verify`, `question`, or `nit`. Apply the `fix` annotations, answer the `question` ones, and say which you did.
+- **`goto`** (file, line) and **`focus`** (file, regions) point the user at specific lines.
+- If the tools are missing, check `claude mcp get annotator`. MCP servers load at session start. *(Tool names from `tools/list`; verdict shape from the plugin's docs. Not yet run end to end.)*
+
 ## Run and delegate work in parallel
 
 Helpers in visible panes run while you keep working, and the user can watch them, steer them, and keep talking to them after you finish.
@@ -129,6 +137,17 @@ herdr agent read scan-payments --source recent-unwrapped --lines 150
   - Start the helper in `.result.root_pane.pane_id`.
 - **List and open:** `herdr worktree list --cwd "$PWD"` shows checkouts and their workspaces; `herdr worktree open --path <path> --no-focus` opens an existing one.
 - **Remove:** `herdr worktree remove --workspace <id>` deletes the checkout and closes its workspace and panes, keeps the branch, and refuses a dirty tree. `--force` is ask-first.
+
+## Track work on the user's board
+
+`tsk` (CLI on PATH, v0.11.6) is the user's task board. A board belongs to the repository's project, or to the user's desk outside Git. Run `tsk guide` before your first tsk command in a session: it holds the workflow and exit codes. Read with `--json`; the human output is for the user.
+
+- **Park what the user defers** ("later", "after this", a follow-up you spotted): `tsk add -t "<title>" -n "<context>"`. Say what you parked.
+- **What's next** at session start or when asked: `tsk list --ready --json`. For blocked and review items, use `tsk list --json` and filter on `status`.
+- **Work a task:**
+  - Start with `tsk status T12 started`, and tick its steps as you go.
+  - Hand it back with `tsk status T12 review`, plus one line on what to check. `done` is the user's call.
+- **Show the board:** run `tsk` in a labeled pane. The user edits it live; re-read it with `tsk list --json`.
 
 ## Reach the user on desktop and phone
 
@@ -182,6 +201,7 @@ herdr plugin pane open --plugin <id> --entrypoint <pane> --placement split --tar
 - **Plugin panes:** for `--placement tab`, pass `--workspace` instead of `--target-pane`; passing both fails. Popups and overlays are modal: ask first.
 - **Install, enable, disable, link:** suggest them; the user decides.
 - **Collie** is installed and is the user's phone view. Read [plugins](references/plugins.md) before touching it. Its `status`, `url`, and `version` actions are safe, and its CLI's `push-test` is the phone channel described under "Reach the user".
+- **File Annotator** (`jonasbaeumer.file-annotator`) is installed. Drive it through its `annotator` MCP tools (see "Ask for the user's review"), not its pane entrypoint.
 
 ## Settings worth suggesting
 
