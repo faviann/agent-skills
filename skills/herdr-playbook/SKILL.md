@@ -33,12 +33,12 @@ A pane is watchable live, scrollable, takes the user's keystrokes, and outlives 
 - Use a pane for anything the user would watch.
 - Use both by running the job in a pane and its `wait-output` in background Bash.
 
-**Show, don't describe.** When the user must judge something visual, put the real thing in front of them, then ask:
+**Show, don't describe.** When the user must judge something visual, or a picture would help them understand or decide because the shape is the point (dependencies between classes, a flow, a comparison, a trend), show it. Skip it when a sentence is clearer.
 
 - a terminal app or CLI output: run it in a pane, driven to the state in question with keys that only navigate;
-- data a picture explains faster (timings, sizes, trends, the herd), or a choice between layouts: the canvas;
+- data a picture explains faster (timings, sizes, trends, the herd), a tree (inheritance, package layout), or a choice between layouts: the canvas;
+- relationships: a small graph as a text diagram in chat; a larger or tangled one, or a chart or page that needs a browser, through the `dataviz` and `publish-artifact` skills, then send the link;
 - a code change: a review pane (below);
-- a chart or page that needs a browser: the `dataviz` and `publish-artifact` skills, then send the link;
 - a few lines of text: chat.
 
 **Canvas.** One pane, labeled `canvas`, where you draw with Python (`rich`, `plotext`, `textual`) and redraw in place. Use it unprompted when it fits, and say what it shows. It only reads, and shows no secrets: Collie mirrors every pane to the phone. Before your first canvas in a session, read [recipes](references/recipes.md#canvas) for the pinned packages, the rules, and `scripts/canvas-ask.py`, which asks the user to pick between previews.

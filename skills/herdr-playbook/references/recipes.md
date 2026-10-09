@@ -112,6 +112,7 @@ The canvas is one pane you draw on with Python. Open it once, redraw it in place
 - **No secrets:** Collie mirrors every pane to the user's phone. Never draw `.env` contents, tokens, or credential output.
 - **Scripts live in their own directory** under `/tmp/canvas-<topic>/`, never in a repository.
 - **Fit the pane:** size to `Console().width` and `.height`. A phone is narrow.
+- **Trees** (inheritance, package layout, call trees) draw well with `rich.tree.Tree`. Graphs with crossing edges do not: send those to the browser (see SKILL.md).
 - **Verify before pointing:** a few seconds after starting, `herdr pane read <id> --source visible --lines 80`. A traceback or an empty panel means fix it first.
 
 **Tested header** (uv 0.12, Python 3.12+):
