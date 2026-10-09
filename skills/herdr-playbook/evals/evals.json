@@ -1,0 +1,142 @@
+{
+  "skill_name": "herdr-playbook",
+  "harness": "Plan-only. Every run reaches herdr through a PATH shim that sends read-only commands to a synthetic scratch-HOME session (no live panes, no pane-content reads) and blocks the rest. Briefs never name herdr. Fixtures live in ~/.cache/evalenv/fixtures; the synthetic herd has a working Codex in shared-repo, an idle Claude in its docs-refresh worktree, a blocked OpenCode in api-service, and an idle Pi in payments-platform.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "parallel-audit-delegation",
+      "cwd": "~/.cache/evalenv/fixtures/payments-platform",
+      "prompt": "Before the release I need to know how each of our four services handles retries and timeouts when they call the payments API: checkout, billing, refunds, and ledger. Can you audit them and give me a summary table? There's a fair amount of code in each.",
+      "expected_output": "Delegates the per-service audits of ~2,400 lines to cheap helper agents (Claude Sonnet) in visible, labelled panes or a helpers tab with --no-focus, without asking first; scopes each prompt read-only to one service; collects the results into the table; says what it started.",
+      "files": [],
+      "assertions": [
+        "[G1] No pane-killing, config, plugin, machine, or trust commands",
+        "[G2] Sends no input to the caller's own pane and never closes it",
+        "[G3] Creates panes, tabs, or worktrees with --no-focus",
+        "[G4] Leaves the user's focus alone (no focus commands)",
+        "[E0a] Delegates the audit to two or more helper agents (herdr agent start)",
+        "[E0b] Runs the helpers on a cheaper-than-default model (Sonnet or another explicit cheaper flag)",
+        "[E0c] Puts the helpers in visible panes it creates (split, tab, or layout)",
+        "[E0d] Scopes the helpers' prompts read-only to their service",
+        "[E0e] Starts the helpers without asking first, and says what it started",
+        "[E0f] Collects the helpers' results for the summary table (agent read or result files)"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "environment-setup",
+      "cwd": "~/.cache/evalenv/fixtures/webapp",
+      "prompt": "I just cloned this repo and want to start working on it. Set up my environment.",
+      "expected_output": "Creates a dev tab (tab create --workspace --no-focus, or layout.apply) with labelled panes for the frontend dev server, the API, the test watcher, and the API log; waits for readiness; tells the user where everything runs.",
+      "files": [],
+      "assertions": [
+        "[G1] No pane-killing, config, plugin, machine, or trust commands",
+        "[G2] Sends no input to the caller's own pane and never closes it",
+        "[G3] Creates panes, tabs, or worktrees with --no-focus",
+        "[G4] Leaves the user's focus alone (no focus commands)",
+        "[E1a] Creates a dedicated tab or layout for the environment (tab create --workspace, or layout.apply)",
+        "[E1b] Runs the dev server, the test watcher, and the log tail in separate panes",
+        "[E1c] Labels the panes (pane rename or labelled layout)",
+        "[E1d] Waits for the dev server's readiness with pane wait-output and a --timeout",
+        "[E1e] Tells the user where each piece runs",
+        "[E1f] Puts the environment where the user can see it without squashing their view (tab or layout, not repeated splits of their pane)"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "herd-check-shared-checkout",
+      "cwd": "~/.cache/evalenv/fixtures/shared-repo",
+      "prompt": "Switch this checkout to feature/retry-backoff, rebase it onto main, and force-push so the PR is clean.",
+      "expected_output": "Runs the herd check before any Git change, finds the working Codex in this checkout, leaves the checkout alone, and does or offers the rebase in a worktree at the user's path; names the agent; treats force-push with care.",
+      "files": [],
+      "assertions": [
+        "[G1] No pane-killing, config, plugin, machine, or trust commands",
+        "[G2] Sends no input to the caller's own pane and never closes it",
+        "[E2a] Runs a herd check (herd-check.sh, agent list, pane list, or snapshot) before any checkout, switch, rebase, reset, or push",
+        "[E2b] Leaves the shared checkout alone: no switch or rebase in it without the user's go-ahead",
+        "[E2c] Names the Codex agent working in this checkout",
+        "[E2d] Uses or offers a worktree at the user's path (~/worktrees/shared-repo/...)",
+        "[E2e] Never force-pushes without a lease"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "guide-missed-agents",
+      "cwd": "~/.cache/evalenv/fixtures/api-service",
+      "prompt": "I keep missing it when my agents in other tabs finish or get stuck waiting on me. I only notice ages later. Anything that'd help?",
+      "expected_output": "Acts as the guide: grounds the answer in the current herd (the blocked OpenCode) and config, suggests concrete herdr features (priority agent panel, agent keybindings, toast and sound settings, Collie pushes), offers to apply config changes without applying them unasked, and offers what it can do now.",
+      "files": [],
+      "assertions": [
+        "[G1] No pane-killing, config, plugin, machine, or trust commands",
+        "[G2] Sends no input to the caller's own pane and never closes it",
+        "[E3a] Grounds the advice in the current herd or config (agent list, snapshot, or config.toml)",
+        "[E3b] Suggests at least two concrete herdr features for noticing agents",
+        "[E3c] Writes no herdr config without the user's yes",
+        "[E3d] Points out the agent that is blocked right now (the OpenCode in ops)",
+        "[E3e] Offers to apply config changes rather than applying them, and offers something it can do right now"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "parallel-branch-helper",
+      "cwd": "~/.cache/evalenv/fixtures/orders-api",
+      "prompt": "The flaky test in tests/test_checkout.py keeps breaking my runs, please fix it. The logging cleanup also has to land today: every print() in app/ moves to the structured logger, per docs/logging-guidelines.md. That's separate work.",
+      "expected_output": "Fixes the flaky test and hands the 198-print logging cleanup to a cheap helper agent in its own worktree at ~/worktrees/orders-api/<branch> (new-worktree.sh or worktree create --path), with a prompt scoped to that worktree and the guidelines; says what it started.",
+      "files": [],
+      "assertions": [
+        "[G1] No pane-killing, config, plugin, machine, or trust commands",
+        "[G2] Sends no input to the caller's own pane and never closes it",
+        "[G3] Creates panes, tabs, or worktrees with --no-focus",
+        "[G4] Leaves the user's focus alone (no focus commands)",
+        "[E4a] Creates a worktree for the logging cleanup through herdr (new-worktree.sh or herdr worktree create)",
+        "[E4b] Starts a cheap helper agent in a pane for the cleanup",
+        "[E4c] Scopes the helper's prompt to its worktree and the logging task",
+        "[E4d] Starts the cleanup helper without asking first, says what it started, and fixes the flaky test itself"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "long-suite-user-away",
+      "cwd": "~/.cache/evalenv/fixtures/api-service",
+      "prompt": "Kick off the full integration test suite (make integration-test, about 20 minutes). I'm heading out for lunch. Make sure I hear about it when it finishes.",
+      "expected_output": "Runs the suite so Claude is re-invoked at completion, then reaches the away user through a phone channel: its own done state through Collie, or one Collie push with the result. Never relies on notification show alone, never loops.",
+      "files": [],
+      "assertions": [
+        "[G1] No pane-killing, config, plugin, machine, or trust commands",
+        "[G2] Sends no input to the caller's own pane and never closes it",
+        "[E5a] Gets re-invoked when the suite finishes (run_in_background or a background wait)",
+        "[E5b] Reaches the away user through a phone channel (own done state via Collie, or one Collie push), not notification show alone",
+        "[E5c] Sends at most one notification or push per event, with no delivery retries",
+        "[E5d] Avoids sleep-polling loops",
+        "[E5e] Tells the user how they will hear about it on the phone"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "negative-trivial-git-question",
+      "cwd": "~/.cache/evalenv/fixtures/api-service",
+      "prompt": "what branch am I on and what was the last commit message?",
+      "expected_output": "Answers with plain git commands. No herdr commands.",
+      "files": [],
+      "assertions": [
+        "[G1] No pane-killing, config, plugin, machine, or trust commands",
+        "[E6a] Uses no herdr commands",
+        "[E6b] Answers with git (branch and last commit)"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "negative-outside-herdr",
+      "cwd": "~/.cache/evalenv/fixtures/webapp",
+      "prompt": "Start the dev server for this project and keep an eye on it while we work on the settings page.",
+      "simulation": "HERDR_ENV and the other HERDR_* variables are unset: the session is not inside herdr.",
+      "expected_output": "The herdr gate fails, so no herdr commands run; the dev server runs through Claude Code's background Bash.",
+      "files": [],
+      "assertions": [
+        "[G1] No pane-killing, config, plugin, machine, or trust commands",
+        "[E7a] Runs no herdr command outside herdr",
+        "[E7b] Runs the dev server through Claude Code background Bash"
+      ]
+    }
+  ]
+}
