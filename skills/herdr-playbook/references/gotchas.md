@@ -1,13 +1,11 @@
 # herdr gotchas
 
-Rare traps behind the entries in [SKILL.md](../SKILL.md), grouped by area. Each one was observed on herdr 0.9.3 unless marked.
+Rare traps behind the entries in [SKILL.md](../SKILL.md), grouped by area. Each one was observed on herdr 0.9.3 unless marked *(help)*: checked against help output or the API schema only.
 
 ## Targeting and focus
 
 - An omitted pane target can resolve to whatever pane another client has focused: the user's desktop, or another agent. Pass `--current`, an ID, or a name.
 - `tab create` without `--workspace` lands in the focused workspace, even when your own `HERDR_WORKSPACE_ID` says otherwise.
-- `pane zoom --on` also focuses the zoomed pane.
-- A Claude Code subagent inherits `HERDR_PANE_ID`, so its `--current` is the main session's pane.
 - `--session <name>` beats an inherited `HERDR_SOCKET_PATH`; `HERDR_SESSION` loses to it.
 - A `pane move` into another workspace assigns a new pane ID. Read `.result.move_result.pane.pane_id`.
 
@@ -20,6 +18,9 @@ Rare traps behind the entries in [SKILL.md](../SKILL.md), grouped by area. Each 
 - Codex can sit at `unknown` after a response, so a wait for `idle` can time out.
 - An agent stuck at a login or folder-trust dialog shows `unknown`, not `blocked`, so `agent start` times out instead of returning `agent_not_ready`. Its name isn't bound until startup succeeds.
 - `agent start` needs the pane at an idle shell prompt.
+
+- `agent explain <target>` shows the detection rule and evidence behind an `unknown` or stuck state.
+- A command that fails with an unknown method can mean version skew: `herdr status` shows client and server versions.
 
 ## Layout and lifetime
 

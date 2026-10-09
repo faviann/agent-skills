@@ -36,7 +36,7 @@ herdr plugin pane close <pane_id>
 
 ## Collie
 
-Collie (`herdr.collie`, installed from `AltanS/collie@v1.5.6`) is the user's phone view of herdr. Its bridge runs as `collie.service` over Tailscale and survives herdr restarts. The user's runbook is `~/repos/dotfiles/main/docs/runbooks/collie.md`.
+Collie (`herdr.collie`) is the user's phone view of herdr. Its bridge runs as `collie.service` over Tailscale and survives herdr restarts. The user's runbook is `~/repos/dotfiles/main/docs/runbooks/collie.md`.
 
 ### What the phone shows
 
@@ -61,7 +61,7 @@ So label what you create. Labelling someone else's pane overrides their name on 
   - It exits non-zero with a message when push is disabled (no VAPID keys) or no device is subscribed.
   - Its output can include per-endpoint errors; discard it.
 - **Resolving the binary.** Resolve `plugin_root` through `herdr plugin list --plugin herdr.collie --json` rather than a hard-coded path; `collie` is not on PATH.
-- **Checking without sending.** `bin/collie push list` reads the subscription store without sending. It prints the service host, date, user agent, and endpoint tail for each device. Report the count; one device was subscribed on 2026-10-08.
+- **Checking without sending.** `bin/collie push list` reads the subscription store without sending. It prints the service host, date, user agent, and endpoint tail for each device. Report the count.
 - **The plugin action.** The `push-test` plugin action takes no arguments and only sends a fixed test message.
 - **What never reaches the phone.** `herdr notification show` stays on attached terminals.
 
@@ -79,3 +79,10 @@ So label what you create. Labelling someone else's pane overrides their name on 
 - New panes and tabs appear within seconds. Agents in them push on `blocked` and `done` like any other.
 - When no desktop client is attached, splits stay narrow and the phone shows them squashed. Prefer a tab then.
 - While herdr is down, the phone shows the session as unreachable and withdraws its notifications. Collie reconnects on its own.
+
+## File Annotator
+
+`jonasbaeumer.file-annotator` exposes the `annotator` MCP server. Drive it through its tools, whose definitions are in your tool list, not through its pane entrypoint. *(Tool names from `tools/list`; verdict shape from the plugin's docs.)*
+
+- The verdict is `approve`, `request_changes`, `reject`, or `cancelled`, with a `summary` and `annotations` of `{file, lines, side, tag, comment}`. Tags are `fix`, `verify`, `question`, or `nit`.
+- `goto` (file, line) and `focus` (file, regions) point the user at specific lines while you narrate.
