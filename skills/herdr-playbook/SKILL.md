@@ -1,6 +1,6 @@
 ---
 name: herdr-playbook
-description: herdr, the terminal workspace manager this session may run in (HERDR_ENV=1), with every capability's verified command. Use when the herdr session hook asks; when the user mentions herdr, panes, worktrees, notifications, or their other agents; or when they defer work to their tsk board.
+description: herdr, the terminal workspace manager this session may run in (HERDR_ENV=1), with every capability's verified command. Use when the herdr session hook asks; or when the user mentions herdr, panes, worktrees, notifications, or their other agents.
 ---
 
 # herdr playbook
@@ -133,15 +133,6 @@ herdr agent read scan-payments --source recent-unwrapped --lines 150
   - Start the helper in `.result.root_pane.pane_id`.
 - **List and open:** `herdr worktree list --cwd "$PWD"` shows checkouts and their workspaces; `herdr worktree open --path <path> --no-focus` opens an existing one.
 - **Remove:** `herdr worktree remove --workspace <id>` deletes the checkout and closes its workspace and panes, keeps the branch, and refuses a dirty tree. `--force` is ask-first.
-
-## Track work on the user's board
-
-`tsk` is the user's task board: per repository project, or the user's desk outside Git. Run `tsk guide` before your first tsk command in a session; it holds the workflow and exit codes. Read with `--json`. In a linked worktree, tsk sees a project named after the worktree directory: pass `-p <repo>` for the repository's board.
-
-- **Park what the user defers** ("later", "after this", a follow-up you spotted): `tsk add -t "<title>" -n "<context>"`. Say what you parked.
-- **What's next** at session start or when asked: `tsk list --ready --json`.
-- **Finish a task** by moving it to `review` with one line on what to check; `done` is the user's call.
-- **Show the board:** run `tsk` in a labeled pane. The user edits it live; re-read it with `tsk list --json`.
 
 ## Reach the user on desktop and phone
 
