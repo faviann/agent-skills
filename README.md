@@ -10,7 +10,8 @@ this repository as a submodule source.
 ## Skills
 
 - [`publish-artifact`](skills/publish-artifact/SKILL.md) — publish a finished
-  file or directory through a host-configured filesystem-to-HTTP mapping.
+  file or directory through a host-configured filesystem-to-HTTP mapping, at a
+  stable URL whose viewer page keeps every version and renders Markdown.
   Extracted with history from the `faviann/skills` fork.
 - [`herdr-playbook`](skills/herdr-playbook/SKILL.md) — makes Claude Code fluent in
   herdr inside a herdr pane. It catalogs every capability with its verified
