@@ -31,7 +31,7 @@ printf '<h1>opaque ${SECRET}</h1>\n' > "$source_file"
 scenario 'an absent default configuration is a successful unconfigured result'
 home="$FIXTURE_ROOT/unconfigured-home"; repo="$FIXTURE_ROOT/unconfigured-repo"
 mkdir -p "$home" "$repo"
-output="$(invoke "$repo" "$home" architecture-report "$source_file" "$(basename "$source_file")")"
+output="$(invoke "$repo" "$home" architecture-report report "$source_file" "$(basename "$source_file")")"
 [[ "$output" == '{"status":"unconfigured"}' ]] || fail "unexpected result: $output"
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'unconfigured result was not one line'
 
@@ -39,12 +39,12 @@ scenario 'an absent default configuration preserves handoff through a source anc
 source_parent="$FIXTURE_ROOT/source-parent"; source_parent_link="$FIXTURE_ROOT/source-parent-link"
 mkdir "$source_parent"; ln -s "$source_parent" "$source_parent_link"
 cp -- "$source_file" "$source_parent/report.html"
-output="$(invoke "$repo" "$home" architecture-report "$source_parent_link/report.html" report.html)"
+output="$(invoke "$repo" "$home" architecture-report report "$source_parent_link/report.html" report.html)"
 [[ "$output" == '{"status":"unconfigured"}' ]] || fail "ancestor symlink prevented unconfigured handoff: $output"
 
 scenario 'invalid calls have a stable category'
 set +e
-output="$(invoke "$repo" "$home" Bad-Slug "$source_file" "$(basename "$source_file")")"; status=$?
+output="$(invoke "$repo" "$home" Bad-Slug report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'invalid producer succeeded'
 assert_error invalid-call "$output"
@@ -61,24 +61,23 @@ for command_name in curl wget; do
   chmod +x "$network_bin/$command_name"
 done
 output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" PATH="$network_bin:$PATH" \
-  "$PUBLISHER" architecture-report "$source_file" "$(basename "$source_file")")"
+  "$PUBLISHER" architecture-report report "$source_file" "$(basename "$source_file")")"
 assert_json "$output"
 [[ "$(jq -r .status <<<"$output")" == published ]] || fail "not published: $output"
-published_path="$(jq -r .path <<<"$output")"; published_url="$(jq -r .url <<<"$output")"
+published_path="$(jq -r .path <<<"$output")"
 [[ -f "$published_path" && ! -L "$published_path" ]] || fail 'published path is not a regular file'
 cmp -s "$source_file" "$published_path" || fail 'published bytes changed'
-[[ "$published_url" == https://artifacts.example.test/public/*/architecture-report/*/report%20name%20%C3%A9.html ]] || fail "unexpected URL: $published_url"
+artifact_id="${published_path#"$publish_root/unconfigured-repo/architecture-report/"}"; artifact_id="${artifact_id%%/*}"
+[[ "$artifact_id" =~ ^report-[0-9a-f]{24}$ ]] || fail "artifact id is not the slug plus a random suffix: $published_path"
+artifact_url="https://artifacts.example.test/public/unconfigured-repo/architecture-report/$artifact_id/"
+expected='{"status":"published","url":"'"$artifact_url"'","version":1,"versionUrl":"'"$artifact_url"'v1/report%20name%20%C3%A9.html","latestUrl":"'"$artifact_url"'latest/report%20name%20%C3%A9.html","path":"'"$publish_root/unconfigured-repo/architecture-report/$artifact_id/v1/report name é.html"'"}'
+[[ "$output" == "$expected" ]] || fail "unexpected result: $output"
 [[ "$(stat -c %a "$publish_root")" == "$mode_before" ]] || fail 'root mode changed'
 [[ "$(stat -c %u:%g "$publish_root")" == "$owner_before" ]] || fail 'root ownership changed'
 [[ ! -e "$FIXTURE_ROOT/http-attempted" ]] || fail 'publisher attempted an HTTP request'
-relative_published="${published_path#"$publish_root/"}"
-[[ "$relative_published" == unconfigured-repo/architecture-report/* ]] || fail 'non-Git grouping did not use invocation directory name'
-generation="$(basename "$(dirname "$published_path")")"
-[[ "$generation" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{24}$ ]] || fail "generation is not timestamped and collision resistant: $generation"
-[[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'success result was not one line'
 
 scenario 'configured publication accepts a regular file through a source ancestor symlink'
-output="$(invoke "$repo" "$home" architecture-report "$source_parent_link/report.html" report.html)"
+output="$(invoke "$repo" "$home" architecture-report report "$source_parent_link/report.html" report.html)"
 [[ "$(jq -r .status <<<"$output")" == published ]] || fail "ancestor symlink prevented publication: $output"
 ancestor_path="$(jq -r .path <<<"$output")"
 [[ "$ancestor_path" == "$publish_root/"* ]] || fail 'ancestor source escaped publishing root'
@@ -88,10 +87,10 @@ scenario 'a selected configuration overrides the default and is reread next invo
 selected_root="$FIXTURE_ROOT/selected"; next_root="$FIXTURE_ROOT/next"; mkdir -p "$selected_root" "$next_root"
 selected_config="$FIXTURE_ROOT/selected.json"
 write_config "$selected_config" "$selected_root" 'http://localhost:8080/one/'
-output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" FAVIANN_SKILLS_ARTIFACT_CONFIG="$selected_config" "$PUBLISHER" prototype "$source_file" "$(basename "$source_file")")"
+output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" FAVIANN_SKILLS_ARTIFACT_CONFIG="$selected_config" "$PUBLISHER" prototype report "$source_file" "$(basename "$source_file")")"
 [[ "$(jq -r .path <<<"$output")" == "$selected_root"/* ]] || fail 'selector was ignored'
 write_config "$selected_config" "$next_root" 'http://localhost:8080/two'
-output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" FAVIANN_SKILLS_ARTIFACT_CONFIG="$selected_config" "$PUBLISHER" prototype "$source_file" "$(basename "$source_file")")"
+output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" FAVIANN_SKILLS_ARTIFACT_CONFIG="$selected_config" "$PUBLISHER" prototype report "$source_file" "$(basename "$source_file")")"
 [[ "$(jq -r .path <<<"$output")" == "$next_root"/* ]] || fail 'changed configuration was not reread'
 [[ "$(jq -r .url <<<"$output")" == http://localhost:8080/two/* ]] || fail 'base URL was not reread'
 
@@ -114,7 +113,7 @@ for kind in missing malformed incomplete relative-root missing-root query-url fr
     unreadable) write_config "$bad" "$publish_root" 'https://example.test'; chmod 000 "$bad" ;;
   esac
   set +e
-  output="$(cd "$repo" && HOME="$home" FAVIANN_SKILLS_ARTIFACT_CONFIG="$bad" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+  output="$(cd "$repo" && HOME="$home" FAVIANN_SKILLS_ARTIFACT_CONFIG="$bad" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
   set -e
   [[ "$status" -ne 0 ]] || fail "$kind configuration succeeded"
   assert_error configuration "$output"
@@ -139,7 +138,7 @@ for index in "${!invalid_authorities[@]}"; do
   write_config "$invalid_authority_config" "$publish_root" "https://$invalid_authority/prefix"
   set +e
   output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$invalid_authority_config" \
-    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+    "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
   set -e
   [[ "$status" -ne 0 ]] || fail "invalid authority succeeded: $invalid_authority"
   assert_error configuration "$output"
@@ -160,7 +159,7 @@ for index in "${!valid_base_urls[@]}"; do
   valid_authority_config="$FIXTURE_ROOT/valid-authority-$index.json"
   write_config "$valid_authority_config" "$publish_root" "$valid_base_url"
   output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$valid_authority_config" \
-    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+    "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
   [[ "$(jq -r .url <<<"$output")" == "$valid_base_url/"* ]] \
     || fail "valid authority or path prefix was rejected: $valid_base_url ($output)"
 done
@@ -169,7 +168,7 @@ scenario 'HTTP schemes are case-insensitive'
 uppercase_config="$FIXTURE_ROOT/uppercase-url.json"
 write_config "$uppercase_config" "$publish_root" 'HTTPS://artifacts.example.test/base/'
 output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$uppercase_config" \
-  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+  "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
 [[ "$(jq -r .url <<<"$output")" == HTTPS://artifacts.example.test/base/* ]] \
   || fail "uppercase HTTPS scheme was not accepted: $output"
 
@@ -182,7 +181,7 @@ for ipv6_host in \
   ipv6_config="$FIXTURE_ROOT/ipv6-$(printf '%s' "$ipv6_host" | tr -cd '[:alnum:]').json"
   write_config "$ipv6_config" "$publish_root" "https://$ipv6_host:8443/base"
   output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$ipv6_config" \
-    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+    "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
   [[ "$(jq -r .url <<<"$output")" == "https://$ipv6_host:8443/base/"* ]] \
     || fail "valid IPv6 authority was rejected: $ipv6_host ($output)"
 done
@@ -198,7 +197,7 @@ for ipv6_host in \
   write_config "$ipv6_config" "$publish_root" "https://$ipv6_host/base"
   set +e
   output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$ipv6_config" \
-    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+    "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
   set -e
   [[ "$status" -ne 0 ]] || fail "invalid IPv6 authority succeeded: $ipv6_host"
   assert_error configuration "$output"
@@ -206,7 +205,7 @@ done
 
 scenario 'configured publication without jq is a dependency error'
 set +e
-output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" PATH=/usr/bin:/bin /bin/bash "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+output="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/config" PATH=/usr/bin:/bin /bin/bash "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 if [[ -x /usr/bin/jq || -x /bin/jq ]]; then
   printf '  skipped: jq exists in the restricted system PATH\n'
@@ -219,7 +218,7 @@ broken_jq_bin="$FIXTURE_ROOT/broken-jq-bin"; mkdir "$broken_jq_bin"
 printf '#!/usr/bin/env bash\nexit 76\n' > "$broken_jq_bin/jq"; chmod +x "$broken_jq_bin/jq"
 set +e
 output="$(cd "$repo" && PATH="$broken_jq_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" \
-  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+  "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'configured publication with broken jq succeeded'
 assert_error dependency "$output"
@@ -234,7 +233,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
 chmod +x "$serializer_jq_bin/jq"
 set +e
 output="$(cd "$repo" && PATH="$serializer_jq_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$FIXTURE_ROOT/config-empty-host.json" \
-  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+  "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'error serialization with failed jq succeeded'
 assert_error configuration "$output"
@@ -243,7 +242,7 @@ assert_error configuration "$output"
 scenario 'a host without Bash receives a dependency result'
 empty_path="$FIXTURE_ROOT/empty-path"; mkdir "$empty_path"
 set +e
-output="$(cd "$repo" && PATH="$empty_path" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+output="$(cd "$repo" && PATH="$empty_path" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'publication without Bash succeeded'
 assert_error dependency "$output"
@@ -251,12 +250,12 @@ assert_error dependency "$output"
 scenario 'a root symlink is accepted but descendant symlinks are refused'
 real_root="$FIXTURE_ROOT/real-root"; root_link="$FIXTURE_ROOT/root-link"; mkdir -p "$real_root"; ln -s "$real_root" "$root_link"
 symlink_config="$FIXTURE_ROOT/symlink-config.json"; write_config "$symlink_config" "$root_link" 'https://example.test/files'
-output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$symlink_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$symlink_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
 [[ "$(jq -r .path <<<"$output")" == "$real_root"/* ]] || fail 'root was not canonicalized'
 repo_group="$(jq -r .path <<<"$output" | sed "s#^$real_root/##" | cut -d/ -f1)"
 rm -rf "$real_root/$repo_group/producer"; ln -s "$FIXTURE_ROOT" "$real_root/$repo_group/producer"
 set +e
-output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$symlink_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$symlink_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'descendant symlink succeeded'; assert_error publication "$output"
 
@@ -266,9 +265,9 @@ git init -q "$git_repo"; git -C "$git_repo" config user.email test@example.test;
 printf x > "$git_repo/tracked"; git -C "$git_repo" add tracked; git -C "$git_repo" commit -qm init
 git -C "$git_repo" worktree add -q -b artifact-test "$worktree"; git init -q "$other_repo"
 group_root="$FIXTURE_ROOT/group-root"; mkdir "$group_root"; group_config="$FIXTURE_ROOT/group.json"; write_config "$group_config" "$group_root" 'https://example.test/group'
-main_output="$(cd "$git_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
-worktree_output="$(cd "$worktree" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
-other_output="$(cd "$other_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+main_output="$(cd "$git_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
+worktree_output="$(cd "$worktree" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
+other_output="$(cd "$other_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
 group_of() { jq -r .path <<<"$1" | sed "s#^$group_root/##" | cut -d/ -f1; }
 [[ "$(group_of "$main_output")" == "$(group_of "$worktree_output")" ]] || fail 'linked worktree grouping differs'
 [[ "$(group_of "$main_output")" != "$(group_of "$other_output")" ]] || fail 'unrelated repository grouping collided'
@@ -281,8 +280,8 @@ git --git-dir="$bare_repo" worktree add -q -b bare-artifact-test "$bare_worktree
 git -C "$bare_worktree" config user.email test@example.test; git -C "$bare_worktree" config user.name Test
 printf x > "$bare_worktree/tracked"; git -C "$bare_worktree" add tracked; git -C "$bare_worktree" commit -qm init
 git --git-dir="$bare_repo" worktree add -q -b other-bare-artifact-test "$other_bare_worktree" bare-artifact-test
-bare_output="$(cd "$bare_worktree" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
-other_bare_output="$(cd "$other_bare_worktree" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+bare_output="$(cd "$bare_worktree" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
+other_bare_output="$(cd "$other_bare_worktree" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
 [[ "$(group_of "$bare_output")" == bare-project ]] || fail 'nested .bare repository did not use its container group'
 [[ "$(group_of "$other_bare_output")" == bare-project ]] || fail 'nested .bare worktrees did not share their container group'
 [[ ! -e "$group_root/.bare" ]] || fail 'nested .bare repository name leaked into grouping'
@@ -292,7 +291,7 @@ broken_git_bin="$FIXTURE_ROOT/broken-git-bin"; mkdir "$broken_git_bin"
 printf '#!/usr/bin/env bash\nexit 74\n' > "$broken_git_bin/git"; chmod +x "$broken_git_bin/git"
 set +e
 output="$(cd "$worktree" && PATH="$broken_git_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" \
-  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+  "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'linked worktree publication with broken Git succeeded'
 assert_error dependency "$output"
@@ -300,13 +299,13 @@ assert_error dependency "$output"
 
 scenario 'linked worktrees also fail stably when Git is unavailable'
 no_git_bin="$FIXTURE_ROOT/no-git-bin"; mkdir "$no_git_bin"
-for dependency in bash jq uname realpath iconv date od tr mkdir cp rm sed; do
+for dependency in bash jq uname realpath iconv date od tr mkdir cp mv rm sed flock; do
   ln -s "$(command -v "$dependency")" "$no_git_bin/$dependency"
 done
 mkdir "$worktree/nested-context"
 set +e
 output="$(cd "$worktree/nested-context" && PATH="$no_git_bin" FAVIANN_SKILLS_ARTIFACT_CONFIG="$group_config" \
-  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+  "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'linked worktree publication without Git succeeded'
 assert_error dependency "$output"
@@ -316,20 +315,23 @@ scenario 'outside Git retains invocation-directory grouping when Git fails'
 outside_root="$FIXTURE_ROOT/outside-root"; outside_repo="$FIXTURE_ROOT/outside-context"; mkdir "$outside_root" "$outside_repo"
 outside_config="$FIXTURE_ROOT/outside.json"; write_config "$outside_config" "$outside_root" 'https://example.test/outside'
 output="$(cd "$outside_repo" && PATH="$broken_git_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$outside_config" \
-  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"
+  "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"
 [[ "$(jq -r .path <<<"$output")" == "$outside_root/outside-context/"* ]] \
   || fail "outside-Git fallback changed: $output"
 
-scenario 'concurrent publications allocate distinct generations without overwriting'
+scenario 'concurrent publications of one slug allocate consecutive versions without a lost update'
 concurrent_root="$FIXTURE_ROOT/concurrent"; mkdir "$concurrent_root"; concurrent_config="$FIXTURE_ROOT/concurrent.json"; write_config "$concurrent_config" "$concurrent_root" 'https://example.test/c'
 pids=(); outputs=()
 for i in $(seq 1 20); do
   result="$FIXTURE_ROOT/concurrent-$i.json"; outputs+=("$result")
-  (cd "$git_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$concurrent_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")" > "$result") & pids+=("$!")
+  (cd "$git_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$concurrent_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")" > "$result") & pids+=("$!")
 done
 for pid in "${pids[@]}"; do wait "$pid" || fail 'concurrent invocation failed'; done
+[[ "$(jq -s -c 'map(.version) | sort' "${outputs[@]}")" == "[$(seq -s, 1 20)]" ]] || fail 'concurrent versions were not 1 through 20'
+[[ "$(jq -r .url "${outputs[@]}" | sort -u | wc -l)" -eq 1 ]] || fail 'concurrent publications of one slug split into several artifacts'
+concurrent_artifact="$(dirname "$(dirname "$(jq -r .path "${outputs[0]}")")")"
+[[ "$(jq -c '[.versions[].version]' "$concurrent_artifact/artifact.json")" == "[$(seq -s, 1 20)]" ]] || fail 'concurrent metadata lost a version'
 paths="$FIXTURE_ROOT/paths"; for result in "${outputs[@]}"; do jq -r .path "$result"; done > "$paths"
-[[ "$(sort -u "$paths" | wc -l)" -eq 20 ]] || fail 'generation collision occurred'
 while IFS= read -r path; do cmp -s "$source_file" "$path" || fail "concurrent output changed: $path"; done < "$paths"
 
 scenario 'random-suffix command failure is one stable dependency result'
@@ -339,7 +341,7 @@ for failed_command in od tr; do
   chmod +x "$random_failure_bin/$failed_command"
   set +e
   output="$(cd "$repo" && PATH="$random_failure_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$concurrent_config" \
-    "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+    "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
   set -e
   [[ "$status" -ne 0 ]] || fail "publication with failed $failed_command succeeded"
   assert_error dependency "$output"
@@ -354,28 +356,28 @@ check_invalid_call() {
   set -e
   [[ "$status" -ne 0 ]] || fail "invalid call succeeded: $*"; assert_error invalid-call "$output"
 }
-check_invalid_call producer relative-file file
-check_invalid_call producer "$FIXTURE_ROOT/source-dir" source-dir
-check_invalid_call producer "$FIXTURE_ROOT/source-link" source-link
-check_invalid_call producer "$source_file" wrong.html
-check_invalid_call producer "$source_file" "../$(basename "$source_file")"
+check_invalid_call producer report relative-file file
+check_invalid_call producer report "$FIXTURE_ROOT/source-dir" source-dir
+check_invalid_call producer report "$FIXTURE_ROOT/source-link" source-link
+check_invalid_call producer report "$source_file" wrong.html
+check_invalid_call producer report "$source_file" "../$(basename "$source_file")"
 invalid_utf8="$FIXTURE_ROOT/invalid-"$'\xff'
 printf x > "$invalid_utf8"
-check_invalid_call producer "$invalid_utf8" "${invalid_utf8##*/}"
+check_invalid_call producer report "$invalid_utf8" "${invalid_utf8##*/}"
 
 scenario 'copy failure cleans only its generation and cleanup failure reports residue'
 failure_root="$FIXTURE_ROOT/failure-root"; mkdir "$failure_root"; failure_config="$FIXTURE_ROOT/failure.json"; write_config "$failure_config" "$failure_root" 'https://example.test/failure'
 fake_bin="$FIXTURE_ROOT/fake-bin"; mkdir "$fake_bin"; printf '#!/usr/bin/env bash\nexit 71\n' > "$fake_bin/cp"; chmod +x "$fake_bin/cp"
 mkdir "$failure_root/unrelated"; printf keep > "$failure_root/unrelated/marker"
 set +e
-output="$(cd "$repo" && PATH="$fake_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$failure_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+output="$(cd "$repo" && PATH="$fake_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$failure_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'injected copy failure succeeded'; assert_error publication "$output"
 [[ "$(jq -r '.residualPath // empty' <<<"$output")" == '' ]] || fail 'successful cleanup reported residue'
 [[ -f "$failure_root/unrelated/marker" ]] || fail 'cleanup touched a sibling'
 printf '#!/usr/bin/env bash\nexit 72\n' > "$fake_bin/rm"; chmod +x "$fake_bin/rm"
 set +e
-output="$(cd "$repo" && PATH="$fake_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$failure_config" "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+output="$(cd "$repo" && PATH="$fake_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$failure_config" "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'copy plus cleanup failure succeeded'; assert_error publication "$output"
 residual="$(jq -r .residualPath <<<"$output")"
@@ -387,7 +389,7 @@ full_root="$FIXTURE_ROOT/full-root"; mkdir "$full_root"
 full_config="$FIXTURE_ROOT/full.json"; write_config "$full_config" "$full_root" 'https://example.test/full'
 set +e
 (cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$full_config" \
-  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")" > /dev/full 2>/dev/null); status=$?
+  "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")" > /dev/full 2>/dev/null); status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'publication with failed result emission succeeded'
 if [[ -d "$full_root/unconfigured-repo/producer" ]]; then
@@ -408,7 +410,7 @@ printf '#!/usr/bin/env bash\nexit 79\n' > "$compound_bin/rm"
 chmod +x "$compound_bin/jq" "$compound_bin/rm"
 set +e
 output="$(cd "$repo" && PATH="$compound_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$compound_config" \
-  "$PUBLISHER" producer "$source_file" "$(basename "$source_file")")"; status=$?
+  "$PUBLISHER" producer report "$source_file" "$(basename "$source_file")")"; status=$?
 set -e
 [[ "$status" -ne 0 ]] || fail 'compound jq and cleanup failure succeeded'
 assert_error publication "$output"
@@ -427,10 +429,10 @@ printf 'body { color: blue; }\n' > "$tree/assets/style.css"
 printf '\000\001\377' > "$tree/assets/icons/opaque.bin"
 printf private-name-not-filtered > "$tree/.hidden/config"
 printf ignored-by-publisher > "$tree/.gitignore"
-output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory "$tree/" "$primary")"
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory report "$tree/" "$primary")"
 tree_path="$(jq -r .path <<<"$output")"
 tree_generation="${tree_path%/"$primary"}"
-[[ "$(jq -r .url <<<"$output")" == https://artifacts.example.test/public/*/directory/*/pages%20%C3%A9/report%20%23%3F%25.html ]] \
+[[ "$(jq -r .versionUrl <<<"$output")" == https://artifacts.example.test/public/unconfigured-repo/directory/report-*/v1/pages%20%C3%A9/report%20%23%3F%25.html ]] \
   || fail "nested primary URL did not encode each segment: $output"
 diff -r "$tree" "$tree_generation" || fail 'directory publication changed or filtered the prepared tree'
 [[ "$(wc -l <<<"$output")" -eq 1 ]] || fail 'directory success was not one JSON line'
@@ -442,7 +444,7 @@ printf asset > "$glob_tree/app.js"
 printf index > "$glob_tree/index.html"
 for inherited_option in SHELLOPTS=noglob BASHOPTS=failglob; do
   output="$(cd "$repo" && env "$inherited_option" FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" \
-    "$PUBLISHER" inherited-glob "$glob_tree" '*')"
+    "$PUBLISHER" inherited-glob report "$glob_tree" '*')"
   [[ "$(jq -r .status <<<"$output")" == published ]] || fail "inherited $inherited_option prevented publication: $output"
   glob_path="$(jq -r .path <<<"$output")"
   diff -r "$glob_tree" "${glob_path%/*}" || fail "inherited $inherited_option changed or filtered the prepared tree"
@@ -450,7 +452,7 @@ done
 
 scenario 'directory primary paths must be contained regular files without traversal'
 for bad_primary in /etc/passwd ../outside.html 'pages é/../../outside.html' 'pages é/../pages é/report #?%.html' './pages é/report #?%.html' 'pages é//report #?%.html' 'pages é/' assets missing.html; do
-  check_invalid_call directory "$tree" "$bad_primary"
+  check_invalid_call directory report "$tree" "$bad_primary"
 done
 
 scenario 'all directory entries reject symlinks special files and invalid path bytes'
@@ -467,14 +469,14 @@ for bad_kind in file-link directory-link dangling-link fifo control-file control
     invalid-file) printf x > "$invalid_tree/"$'invalid-\xff' ;;
     invalid-directory) mkdir "$invalid_tree/"$'invalid-\xff' ;;
   esac
-  check_invalid_call directory "$invalid_tree" index.html
+  check_invalid_call directory report "$invalid_tree" index.html
 done
-check_invalid_call directory "$FIXTURE_ROOT/tree-directory-link" "link/$primary"
+check_invalid_call directory report "$FIXTURE_ROOT/tree-directory-link" "link/$primary"
 ln -s "$tree" "$FIXTURE_ROOT/tree-root-link"
-check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/" "$primary"
-check_invalid_call directory "$FIXTURE_ROOT/tree-root-link/." "$primary"
+check_invalid_call directory report "$FIXTURE_ROOT/tree-root-link/" "$primary"
+check_invalid_call directory report "$FIXTURE_ROOT/tree-root-link/." "$primary"
 scenario 'configured publication accepts a prepared tree through a source ancestor symlink'
-output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" ancestor-directory "$FIXTURE_ROOT/tree-root-link/pages é" 'report #?%.html')"
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" ancestor-directory report "$FIXTURE_ROOT/tree-root-link/pages é" 'report #?%.html')"
 [[ "$(jq -r .status <<<"$output")" == published ]] || fail "tree ancestor symlink prevented publication: $output"
 ancestor_path="$(jq -r .path <<<"$output")"
 [[ "$ancestor_path" == "$publish_root/"* ]] || fail 'ancestor tree escaped publishing root'
@@ -484,7 +486,7 @@ scenario 'unreadable directory entries fail publication without a success result
 unreadable_tree="$FIXTURE_ROOT/unreadable-tree"; mkdir -p "$unreadable_tree/closed"
 printf x > "$unreadable_tree/index.html"; chmod 000 "$unreadable_tree/closed"
 set +e
-output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory "$unreadable_tree" index.html)"; status=$?
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory report "$unreadable_tree" index.html)"; status=$?
 set -e
 chmod 700 "$unreadable_tree/closed"
 [[ "$status" -eq 5 ]] || fail 'unreadable tree did not fail publication'
@@ -494,7 +496,7 @@ scenario 'concurrent directory publications preserve complete independent copies
 pids=(); outputs=()
 for i in {1..8}; do
   result="$FIXTURE_ROOT/concurrent-tree-$i.json"; outputs+=("$result")
-  (cd "$git_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$concurrent_config" "$PUBLISHER" directory "$tree" "$primary" > "$result") & pids+=("$!")
+  (cd "$git_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$concurrent_config" "$PUBLISHER" directory report "$tree" "$primary" > "$result") & pids+=("$!")
 done
 for pid in "${pids[@]}"; do wait "$pid" || fail 'concurrent directory invocation failed'; done
 paths="$FIXTURE_ROOT/tree-paths"
@@ -530,7 +532,7 @@ for overlap_kind in root-inside-source source-inside-root file-inside-root same-
   overlap_before="$FIXTURE_ROOT/before-$overlap_kind"
   cp -a -- "$overlap_base" "$overlap_before"
   set +e
-  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$overlap_config" "$PUBLISHER" directory "$overlap_source" "$overlap_primary")"; status=$?
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$overlap_config" "$PUBLISHER" directory report "$overlap_source" "$overlap_primary")"; status=$?
   set -e
   [[ "$status" -eq 2 ]] || fail "$overlap_kind did not fail as an invalid call: $output"
   assert_error invalid-call "$output"
@@ -543,13 +545,13 @@ enclosing_tree="$FIXTURE_ROOT/enclosing-tree"; mkdir -p "$enclosing_tree/web"
 printf primary > "$enclosing_tree/index.html"
 enclosing_config="$FIXTURE_ROOT/enclosing.json"; write_config "$enclosing_config" "$enclosing_tree/web" 'https://example.test/enclosing'
 # Seed a real generation from a disjoint file before attempting the enclosing tree.
-output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory "$enclosing_tree/index.html" index.html)"
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory report "$enclosing_tree/index.html" index.html)"
 [[ "$(jq -r .status <<<"$output")" == published ]] || fail 'seed publication failed'
 enclosing_before="$FIXTURE_ROOT/enclosing-before"
 cp -a -- "$enclosing_tree" "$enclosing_before"
 for attempt in 1 2; do
   set +e
-  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory "$enclosing_tree" index.html)"; status=$?
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$enclosing_config" "$PUBLISHER" directory report "$enclosing_tree" index.html)"; status=$?
   set -e
   [[ "$status" -eq 2 ]] || fail "enclosing publication $attempt ingested publication storage: $output"
   assert_error invalid-call "$output"
@@ -566,7 +568,7 @@ for sibling_kind in root-prefix source-prefix; do
   mkdir "$sibling_source" "$sibling_root"
   printf primary > "$sibling_source/index.html"
   sibling_config="$FIXTURE_ROOT/sibling.json"; write_config "$sibling_config" "$sibling_root" 'https://example.test/sibling'
-  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$sibling_config" "$PUBLISHER" directory "$sibling_source" index.html)"
+  output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$sibling_config" "$PUBLISHER" directory report "$sibling_source" index.html)"
   [[ "$(jq -r .status <<<"$output")" == published ]] || fail "disjoint $sibling_kind publication failed"
   diff -r "$sibling_source" "$(dirname "$(jq -r .path <<<"$output")")" || fail 'sibling tree copy changed'
 done
@@ -582,13 +584,13 @@ printf '%s\n' '#!/usr/bin/env bash' 'set -e' \
   "/bin/cp -- $(printf '%q' "$replacement_config") $(printf '%q' "$snapshot_config")" \
   'exec /bin/cp "$@"' > "$snapshot_bin/cp"
 chmod +x "$snapshot_bin/cp"
-output="$(cd "$repo" && PATH="$snapshot_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory "$tree" "$primary")"
+output="$(cd "$repo" && PATH="$snapshot_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory report "$tree" "$primary")"
 [[ "$(jq -r .path <<<"$output")" == "$snapshot_root/"* && "$(jq -r .url <<<"$output")" == https://example.test/snapshot/* ]] \
   || fail "one publication mixed configurations: $output"
 snapshot_path="$(jq -r .path <<<"$output")"
 diff -r "$tree" "${snapshot_path%/"$primary"}" || fail 'configuration change split the first published tree'
 [[ -z "$(find "$replacement_root" -mindepth 1 -print -quit)" ]] || fail 'first publication wrote beneath the replacement root'
-output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory "$tree" "$primary")"
+output="$(cd "$repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$snapshot_config" "$PUBLISHER" directory report "$tree" "$primary")"
 [[ "$(jq -r .path <<<"$output")" == "$replacement_root/"* && "$(jq -r .url <<<"$output")" == https://example.test/replacement/* ]] \
   || fail 'next directory publication did not reread configuration'
 replacement_path="$(jq -r .path <<<"$output")"
@@ -607,7 +609,7 @@ for cleanup_fails in false true; do
     printf '#!/usr/bin/env bash\nexit 72\n' > "$partial_bin/rm"; chmod +x "$partial_bin/rm"
   fi
   set +e
-  output="$(cd "$repo" && PATH="$partial_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory "$tree" "$primary")"; status=$?
+  output="$(cd "$repo" && PATH="$partial_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$config" "$PUBLISHER" directory report "$tree" "$primary")"; status=$?
   set -e
   [[ "$status" -eq 5 ]] || fail 'partial directory copy did not fail publication'
   assert_error publication "$output"
@@ -618,8 +620,140 @@ for cleanup_fails in false true; do
     [[ -n "$(find "$residual" -type f -print -quit)" ]] || fail 'failure did not exercise a partial copy'
   else
     [[ -z "$residual" ]] || fail 'successful directory cleanup reported residue'
-    [[ "$(find "$publish_root/unconfigured-repo/directory" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]] || fail 'failed directory copy left a generation'
+    [[ "$(cd "${tree_generation%/v1}" && echo *)" == 'artifact.json index.html latest v1' ]] || fail 'failed directory copy left a version'
   fi
 done
+
+readonly ASSETS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../assets" && pwd)"
+clock_bin="$FIXTURE_ROOT/clock-bin"; mkdir "$clock_bin"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$PUBLISHED_AT"' > "$clock_bin/date"; chmod +x "$clock_bin/date"
+publish_at() {
+  local published_at="$1" cwd="$2" selected="$3"; shift 3
+  (cd "$cwd" && PATH="$clock_bin:$PATH" PUBLISHED_AT="$published_at" FAVIANN_SKILLS_ARTIFACT_CONFIG="$selected" "$PUBLISHER" "$@")
+}
+artifact_of() { dirname "$(dirname "$(jq -r .path <<<"$1")")"; }
+versions_root="$FIXTURE_ROOT/versions-root"; versions_repo="$FIXTURE_ROOT/notes"; mkdir "$versions_root" "$versions_repo"
+versions_config="$FIXTURE_ROOT/versions.json"; write_config "$versions_config" "$versions_root" 'https://example.test/v'
+first_source="$FIXTURE_ROOT/first/report.html"; second_source="$FIXTURE_ROOT/second/report.html"
+mkdir "$FIXTURE_ROOT/first" "$FIXTURE_ROOT/second"
+printf '<h1>first</h1>\n' > "$first_source"; printf '<h1>second</h1>\n' > "$second_source"
+
+scenario 'a first publication creates the viewer, metadata, v1, and latest'
+output="$(publish_at 2026-03-01T10:00:00Z "$versions_repo" "$versions_config" docs weekly "$first_source" report.html 'Weekly report')"
+weekly="$(artifact_of "$output")"; weekly_id="${weekly##*/}"
+[[ "$weekly" == "$versions_root/notes/docs/$weekly_id" && "$weekly_id" =~ ^weekly-[0-9a-f]{24}$ ]] || fail "unexpected artifact location: $output"
+weekly_url="https://example.test/v/notes/docs/$weekly_id/"
+[[ "$output" == '{"status":"published","url":"'"$weekly_url"'","version":1,"versionUrl":"'"$weekly_url"'v1/report.html","latestUrl":"'"$weekly_url"'latest/report.html","path":"'"$weekly"'/v1/report.html"}' ]] \
+  || fail "unexpected first result: $output"
+[[ "$(cd "$weekly" && echo *)" == 'artifact.json index.html latest v1' ]] || fail 'first publication layout differs'
+cmp -s "$ASSETS/viewer.html" "$weekly/index.html" || fail 'artifact index is not the bundled viewer'
+cmp -s "$first_source" "$weekly/v1/report.html" && cmp -s "$first_source" "$weekly/latest/report.html" || fail 'first version bytes differ'
+
+scenario 'republishing a slug adds a version at the same URL, keeps the title, and swaps latest'
+output="$(publish_at 2026-03-02T10:00:00Z "$versions_repo" "$versions_config" docs weekly "$second_source" report.html)"
+[[ "$(jq -r .url <<<"$output")" == "$weekly_url" && "$(jq -r .version <<<"$output")" == 2 ]] || fail "republish did not add version 2: $output"
+[[ "$(jq -r .versionUrl <<<"$output")" == "${weekly_url}v2/report.html" ]] || fail "unexpected version URL: $output"
+cmp -s "$second_source" "$weekly/latest/report.html" || fail 'latest does not hold the version 2 bytes'
+cmp -s "$second_source" "$weekly/v2/report.html" && cmp -s "$first_source" "$weekly/v1/report.html" || fail 'versions are not immutable copies'
+[[ "$(cd "$weekly" && echo *)" == 'artifact.json index.html latest v1 v2' ]] || fail 'republish left staging residue'
+[[ "$(jq -c . "$weekly/artifact.json")" == '{"schema":1,"repository":"notes","producer":"docs","slug":"weekly","title":"Weekly report","versions":[{"version":1,"primary":"report.html","publishedAt":"2026-03-01T10:00:00Z"},{"version":2,"primary":"report.html","publishedAt":"2026-03-02T10:00:00Z"}]}' ]] \
+  || fail "unexpected metadata: $(jq -c . "$weekly/artifact.json")"
+
+scenario 'a provided title replaces the stored one and a new artifact without one uses its slug'
+output="$(publish_at 2026-03-03T10:00:00Z "$versions_repo" "$versions_config" docs weekly "$first_source" report.html 'Renamed é report')"
+[[ "$(jq -r .version <<<"$output")" == 3 && "$(jq -r .title "$weekly/artifact.json")" == 'Renamed é report' ]] || fail 'title was not replaced'
+output="$(publish_at 2026-03-04T10:00:00Z "$versions_repo" "$versions_config" docs daily-notes "$first_source" report.html)"
+daily="$(artifact_of "$output")"
+[[ "$daily" != "$weekly" && "${daily##*/}" =~ ^daily-notes-[0-9a-f]{24}$ ]] || fail "distinct slug reused an artifact: $output"
+[[ "$(jq -r .title "$daily/artifact.json")" == daily-notes ]] || fail 'untitled artifact did not default to its slug'
+[[ -z "$(find "$versions_root" -name gallery.json -print -quit)" && "$(jq -r 'has("galleryUrl")' <<<"$output")" == false ]] \
+  || fail 'an unconfigured gallery was written or advertised'
+
+scenario 'an unrecorded version left by a crash is replaced by the next publication'
+mkdir "$weekly/v4"; printf stale > "$weekly/v4/report.html"
+output="$(publish_at 2026-03-05T10:00:00Z "$versions_repo" "$versions_config" docs weekly "$second_source" report.html)"
+[[ "$(jq -r .version <<<"$output")" == 4 ]] || fail "crash residue changed version numbering: $output"
+cmp -s "$second_source" "$weekly/v4/report.html" || fail 'crash residue survived in the new version'
+
+scenario 'invalid slugs and titles are caller errors'
+check_title() {
+  set +e
+  output="$(cd "$versions_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$versions_config" "$PUBLISHER" "$@")"; status=$?
+  set -e
+  [[ "$status" -eq 2 ]] || fail "invalid slug or title succeeded: $output"; assert_error invalid-call "$output"
+}
+long_title="$(printf 'é%.0s' {1..200})"
+check_title docs Weekly "$first_source" report.html
+check_title docs weekly "$first_source" report.html ''
+check_title docs weekly "$first_source" report.html $'tab\there'
+check_title docs weekly "$first_source" report.html $'invalid-\xff'
+check_title docs weekly "$first_source" report.html "${long_title}x"
+output="$(publish_at 2026-03-06T10:00:00Z "$versions_repo" "$versions_config" docs weekly "$first_source" report.html "$long_title")"
+[[ "$(jq -r .title "$weekly/artifact.json")" == "$long_title" ]] || fail 'a 200-character title was refused'
+
+scenario 'a configured gallery lists versioned artifacts newest first and skips legacy publications'
+gallery_root="$FIXTURE_ROOT/gallery-root"; mkdir "$gallery_root"
+gallery_config="$FIXTURE_ROOT/gallery.json"
+jq -cn --arg directory "$gallery_root" '{directory:$directory,baseUrl:"https://example.test/g",gallery:"Secret_gallery-0123456789"}' > "$gallery_config"
+legacy="$gallery_root/notes/docs/20250101T000000Z-0123456789abcdef01234567"; mkdir -p "$legacy"
+printf legacy > "$legacy/report.html"
+printf '{"schema":1,"slug":"report","title":"Legacy","versions":[{"version":1}]}\n' > "$legacy/artifact.json"
+hidden_repo="$FIXTURE_ROOT/.hidden-group"; mkdir "$hidden_repo"
+older="$(publish_at 2026-04-01T10:00:00Z "$versions_repo" "$gallery_config" docs weekly "$first_source" report.html 'Weekly')"
+newer="$(publish_at 2026-04-02T10:00:00Z "$hidden_repo" "$gallery_config" prototype board "$first_source" report.html 'Board')"
+output="$(publish_at 2026-04-03T10:00:00Z "$versions_repo" "$gallery_config" docs weekly "$second_source" report.html)"
+older_url="$(jq -r .url <<<"$older")"; newer_url="$(jq -r .url <<<"$newer")"
+[[ "$(jq -r .galleryUrl <<<"$output")" == https://example.test/g/Secret_gallery-0123456789/ ]] || fail "missing gallery URL: $output"
+gallery_directory="$gallery_root/Secret_gallery-0123456789"
+cmp -s "$ASSETS/gallery.html" "$gallery_directory/index.html" || fail 'gallery index is not the bundled gallery page'
+expected_gallery='[{"repository":"notes","producer":"docs","slug":"weekly","title":"Weekly","url":"'"$older_url"'","versions":2,"updatedAt":"2026-04-03T10:00:00Z"},{"repository":".hidden-group","producer":"prototype","slug":"board","title":"Board","url":"'"$newer_url"'","versions":1,"updatedAt":"2026-04-02T10:00:00Z"}]'
+[[ "$(jq -c . "$gallery_directory/gallery.json")" == "$expected_gallery" ]] || fail "unexpected gallery: $(jq -c . "$gallery_directory/gallery.json")"
+[[ "$(<"$legacy/report.html")" == legacy ]] || fail 'legacy publication changed'
+
+scenario 'failed publications leave metadata, latest, and the gallery unchanged'
+gallery_weekly="$(artifact_of "$output")"
+state_before="$FIXTURE_ROOT/state-before"; cp -a -- "$gallery_root" "$state_before"
+failing_cp_bin="$FIXTURE_ROOT/failing-cp-bin"; mkdir "$failing_cp_bin"
+printf '#!/usr/bin/env bash\nexit 71\n' > "$failing_cp_bin/cp"; chmod +x "$failing_cp_bin/cp"
+set +e
+output="$(cd "$versions_repo" && PATH="$failing_cp_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$gallery_config" \
+  "$PUBLISHER" docs weekly "$first_source" report.html 'Never shown')"; status=$?
+set -e
+[[ "$status" -eq 5 ]] || fail "failed copy succeeded: $output"; assert_error publication "$output"
+diff -r --no-dereference "$state_before" "$gallery_root" || fail 'failed copy changed published state'
+set +e
+(cd "$versions_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$gallery_config" \
+  "$PUBLISHER" docs weekly "$first_source" report.html 'Never shown' > /dev/full 2>/dev/null); status=$?
+set -e
+[[ "$status" -ne 0 ]] || fail 'publication with failed result emission succeeded'
+diff -r --no-dereference "$state_before" "$gallery_root" || fail 'failed emission did not roll back the committed version'
+[[ "$(jq -r .title "$gallery_weekly/artifact.json")" == Weekly ]] || fail 'failed emission kept the new title'
+
+scenario 'a lock that cannot be acquired is a publication error'
+failing_flock_bin="$FIXTURE_ROOT/failing-flock-bin"; mkdir "$failing_flock_bin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$failing_flock_bin/flock"; chmod +x "$failing_flock_bin/flock"
+set +e
+output="$(cd "$versions_repo" && PATH="$failing_flock_bin:$PATH" FAVIANN_SKILLS_ARTIFACT_CONFIG="$gallery_config" \
+  "$PUBLISHER" docs weekly "$first_source" report.html)"; status=$?
+set -e
+[[ "$status" -eq 5 && "$(jq -r .message <<<"$output")" == 'publication lock was not acquired within 60 seconds' ]] \
+  || fail "lock failure was not a publication error: $output"
+diff -r --no-dereference "$state_before" "$gallery_root" || fail 'lock failure changed published state'
+
+scenario 'invalid gallery values are configuration errors and a colliding repository group is refused'
+for bad_gallery in '"short"' '"has/slash-0123456789abc"' '"has space-0123456789ab"' '""' '42' 'null'; do
+  bad_gallery_config="$FIXTURE_ROOT/bad-gallery.json"
+  jq -cn --arg directory "$gallery_root" --argjson gallery "$bad_gallery" '{directory:$directory,baseUrl:"https://example.test/g",gallery:$gallery}' > "$bad_gallery_config"
+  set +e
+  output="$(cd "$versions_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$bad_gallery_config" "$PUBLISHER" docs weekly "$first_source" report.html)"; status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "invalid gallery $bad_gallery succeeded: $output"; assert_error configuration "$output"
+done
+colliding_repo="$FIXTURE_ROOT/Secret_gallery-0123456789"; mkdir "$colliding_repo"
+set +e
+output="$(cd "$colliding_repo" && FAVIANN_SKILLS_ARTIFACT_CONFIG="$gallery_config" "$PUBLISHER" docs weekly "$first_source" report.html)"; status=$?
+set -e
+[[ "$status" -eq 2 ]] || fail "gallery-colliding repository group succeeded: $output"; assert_error invalid-call "$output"
+diff -r --no-dereference "$state_before" "$gallery_root" || fail 'refused publications changed published state'
 
 printf 'All publish-artifact scenarios passed.\n'

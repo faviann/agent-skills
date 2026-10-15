@@ -9,6 +9,8 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 
 set -euo pipefail
+set +f
+shopt -u failglob
 
 fixed_error() {
   local category="$1" message="$2" code="$3"
@@ -16,11 +18,16 @@ fixed_error() {
   exit "$code"
 }
 
-[[ "$#" -eq 3 ]] || fixed_error invalid-call 'expected producer, absolute source file or directory, and relative primary path' 2
-producer="$1"; source_path="$2"; primary_path="$3"
+[[ "$#" -eq 4 || "$#" -eq 5 ]] \
+  || fixed_error invalid-call 'expected producer, slug, absolute source file or directory, relative primary path, and optional title' 2
+producer="$1"; slug="$2"; source_path="$3"; primary_path="$4"
+title_given=false; title=''
+if [[ "$#" -eq 5 ]]; then title_given=true; title="$5"; fi
 
 [[ "$producer" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
   || fixed_error invalid-call 'producer must be a lowercase slug' 2
+[[ "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
+  || fixed_error invalid-call 'slug must be a lowercase slug' 2
 # Remove trailing directory syntax without resolving the source entry itself.
 while [[ "$source_path" != / && ( "$source_path" == */ || "$source_path" == */. ) ]]; do
   source_path="${source_path%/}"; source_path="${source_path%/.}"
@@ -251,8 +258,19 @@ if ! valid_base_url "$base_url"; then
   json_error configuration 'baseUrl must be an absolute HTTP(S) URL without query or fragment' 3
 fi
 while [[ "$base_url" == */ ]]; do base_url="${base_url%/}"; done
+gallery=''
+if ! gallery_configured="$(jq -r 'has("gallery")' <<<"$config_json")"; then
+  json_error dependency 'jq failed while reading configured gallery' 4
+fi
+if [[ "$gallery_configured" == true ]]; then
+  if ! gallery="$(jq -r 'if (.gallery | type) == "string" then .gallery else "" end' <<<"$config_json")"; then
+    json_error dependency 'jq failed while reading configured gallery' 4
+  fi
+  [[ "$gallery" =~ ^[A-Za-z0-9_-]{16,}$ ]] \
+    || json_error configuration 'gallery must be one path segment of at least 16 letters, digits, underscores, or hyphens' 3
+fi
 
-required_commands=(uname realpath iconv date od tr mkdir cp rm sed jq)
+required_commands=(uname realpath iconv date od tr mkdir cp mv rm sed jq flock)
 for dependency in "${required_commands[@]}"; do
   command -v "$dependency" >/dev/null 2>&1 \
     || json_error dependency "required Linux command is unavailable: $dependency" 4
@@ -264,6 +282,20 @@ done
 valid_utf8() { printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; }
 valid_utf8 "$primary_path" || json_error invalid-call 'primary name must be valid UTF-8' 2
 [[ ! "$primary_path" =~ [[:cntrl:]] ]] || json_error invalid-call 'primary name must not contain control characters' 2
+if [[ "$title_given" == true ]]; then
+  valid_utf8 "$title" || json_error invalid-call 'title must be valid UTF-8' 2
+  if ! title_valid="$(jq -rn --arg title "$title" '$title | length > 0 and length <= 200 and (test("\\p{Cc}") | not)')"; then
+    json_error dependency 'jq failed while validating the title' 4
+  fi
+  [[ "$title_valid" == true ]] \
+    || json_error invalid-call 'title must be 1 to 200 characters without control characters' 2
+fi
+
+if ! script_path="$(realpath -e -- "${BASH_SOURCE[0]}" 2>/dev/null)" ||
+   ! viewer_html="$(<"${script_path%/*/*}/assets/viewer.html")" ||
+   ! gallery_html="$(<"${script_path%/*/*}/assets/gallery.html")"; then
+  json_error dependency 'bundled viewer assets could not be read' 4
+fi
 
 if ! canonical_root="$(realpath -e -- "$configured_root" 2>/dev/null)"; then
   json_error configuration 'configured directory could not be canonicalized' 3
@@ -281,7 +313,7 @@ if [[ "$canonical_source" == "$canonical_root" ||
   json_error invalid-call 'source and publishing root must not overlap' 2
 fi
 
-# Validate the complete prepared tree before allocating a generation. Keep the
+# Validate the complete prepared tree before allocating a version. Keep the
 # source unchanged during publication; this inventory is also the copy set.
 source_entries=(); source_types=()
 validate_tree() {
@@ -305,8 +337,6 @@ validate_tree() {
   done
 }
 if [[ -d "$source_path" ]]; then
-  set +f
-  shopt -u failglob
   shopt -s dotglob nullglob
   validate_tree "$source_path" ''
   shopt -u dotglob nullglob
@@ -367,6 +397,56 @@ ensure_owned_directory() {
   [[ -d "$path" && ! -L "$path" ]]
 }
 
+[[ -z "$gallery" || "$repository_group" != "$gallery" ]] \
+  || json_error invalid-call 'repository grouping collides with the configured gallery' 2
+
+if ! published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"; then
+  json_error dependency 'UTC timestamp generation failed' 4
+fi
+if ! suffix="$(od -An -N12 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"; then
+  json_error dependency 'random suffix generation failed' 4
+fi
+[[ "${#suffix}" -eq 24 && "$suffix" =~ ^[0-9a-f]{24}$ ]] \
+  || json_error dependency 'random suffix generation failed' 4
+
+replace_file() {
+  local temporary="${1%/*}/.${1##*/}.tmp"
+  printf '%s\n' "$2" > "$temporary" && mv -T -- "$temporary" "$1"
+}
+
+rebuild_gallery() {
+  local gallery_directory="$root_prefix$gallery" file relative entry entries='' listing
+  ensure_owned_directory "$gallery_directory" || return 1
+  shopt -s dotglob nullglob
+  for file in "$root_prefix"*/*/*/artifact.json; do
+    relative="${file#"$root_prefix"}"; relative="${relative%/artifact.json}"
+    [[ "$(realpath -e -- "$file" 2>/dev/null)" == "$file" ]] || continue
+    entry="$(jq -c --arg base "$base_url" --arg path "$relative" '
+      . as $artifact | ($path | split("/")) as [$repository, $producer, $id]
+      | select(.schema == 1 and (.slug | type) == "string" and (.title | type) == "string"
+          and (.versions | type) == "array" and (.versions | length) > 0
+          and ($id | startswith($artifact.slug + "-"))
+          and ($id[($artifact.slug | length) + 1:] | test("^[0-9a-f]{24}$")))
+      | {repository: $repository, producer: $producer, slug: .slug, title: .title,
+         url: "\($base)/\($path | split("/") | map(@uri) | join("/"))/",
+         versions: (.versions | length), updatedAt: .versions[-1].publishedAt}
+    ' "$file" 2>/dev/null)" || continue
+    [[ -z "$entry" ]] || entries+="$entry"$'\n'
+  done
+  shopt -u dotglob nullglob
+  listing="$(jq -s 'sort_by(.updatedAt) | reverse' <<<"$entries")" || return 1
+  replace_file "$gallery_directory/index.html" "$gallery_html" &&
+    replace_file "$gallery_directory/gallery.json" "$listing"
+}
+
+# Slug lookup, version numbering, the latest swap, and the gallery scan all read
+# state that concurrent publications write, so one root lock serializes them.
+if ! { exec {lock_fd}<"$canonical_root"; } 2>/dev/null; then
+  json_error publication 'publishing root could not be opened for locking' 5
+fi
+flock -w 60 "$lock_fd" >/dev/null 2>&1 \
+  || json_error publication 'publication lock was not acquired within 60 seconds' 5
+
 repository_directory="$root_prefix$repository_group"
 producer_directory="$repository_directory/$producer"
 ensure_owned_directory "$repository_directory" \
@@ -374,39 +454,87 @@ ensure_owned_directory "$repository_directory" \
 ensure_owned_directory "$producer_directory" \
   || json_error publication 'producer grouping is not a real usable directory' 5
 
-generation_directory=''
-timestamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)" \
-  || json_error dependency 'UTC timestamp generation failed' 4
-for _ in {1..16}; do
-  if ! suffix="$(od -An -N12 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"; then
-    json_error dependency 'random suffix generation failed' 4
-  fi
-  [[ "${#suffix}" -eq 24 && "$suffix" =~ ^[0-9a-f]{24}$ ]] \
-    || json_error dependency 'random suffix generation failed' 4
-  candidate="$producer_directory/$timestamp-$suffix"
-  if mkdir -- "$candidate" >/dev/null 2>&1; then
-    generation_directory="$candidate"
-    break
-  fi
-  [[ -e "$candidate" || -L "$candidate" ]] \
-    || json_error publication 'generation directory could not be allocated' 5
+artifact_directory=''
+shopt -s nullglob
+for candidate in "$producer_directory/$slug"-*; do
+  [[ "${candidate##*/}" =~ ^$slug-[0-9a-f]{24}$ ]] || continue
+  [[ -z "$artifact_directory" ]] || json_error publication 'more than one artifact directory uses this slug' 5
+  [[ -d "$candidate" && ! -L "$candidate" ]] || json_error publication 'artifact is not a real directory' 5
+  artifact_directory="$candidate"
 done
-[[ -n "$generation_directory" ]] \
-  || json_error publication 'collision-resistant generation allocation was exhausted' 5
+shopt -u nullglob
+artifact_created=false
+if [[ -z "$artifact_directory" ]]; then
+  artifact_directory="$producer_directory/$slug-$suffix"
+  mkdir -- "$artifact_directory" >/dev/null 2>&1 \
+    || json_error publication 'artifact directory could not be allocated' 5
+  artifact_created=true
+fi
 
-publication_failure() {
-  local message="$1"
-  if rm -rf -- "$generation_directory" >/dev/null 2>&1; then
-    json_error publication "$message" 5
-  else
-    json_error publication "$message; cleanup also failed" 5 "$generation_directory"
+metadata_path="$artifact_directory/artifact.json"
+latest_path="$artifact_directory/latest"
+latest_staging="$artifact_directory/.latest-staging"
+previous_metadata=''
+if [[ -e "$metadata_path" || -L "$metadata_path" ]]; then
+  if [[ ! -f "$metadata_path" || -L "$metadata_path" ]] || ! previous_metadata="$(<"$metadata_path")"; then
+    json_error publication 'artifact metadata is not a readable regular file' 5
   fi
+  jq -e '
+    type == "object" and .schema == 1 and (.title | type) == "string" and (.versions | type) == "array" and
+    all(.versions[]; (.version | type) == "number" and .version >= 1 and .version == (.version | floor))
+  ' >/dev/null 2>&1 <<<"$previous_metadata" \
+    || json_error publication 'artifact metadata is not valid schema 1 metadata' 5
+fi
+
+version_directory=''
+metadata_committed=false; latest_exchanged=false; latest_created=false
+# Every failure restores the previous metadata, latest copy, and gallery, so an
+# error result never leaves a new version visible.
+publication_failure() {
+  local message="$1" residual=''
+  if [[ "$artifact_created" == true ]]; then
+    rm -rf -- "$artifact_directory" >/dev/null 2>&1 || residual="$artifact_directory"
+  else
+    if [[ "$latest_exchanged" == true ]]; then
+      mv --exchange -T -- "$latest_staging" "$latest_path" >/dev/null 2>&1 || residual="$latest_path"
+    elif [[ "$latest_created" == true ]]; then
+      rm -rf -- "$latest_path" >/dev/null 2>&1 || residual="$latest_path"
+    fi
+    if [[ "$metadata_committed" == true && -n "$previous_metadata" ]]; then
+      replace_file "$metadata_path" "$previous_metadata" >/dev/null 2>&1 || residual="$metadata_path"
+    elif [[ "$metadata_committed" == true ]]; then
+      rm -f -- "$metadata_path" >/dev/null 2>&1 || residual="$metadata_path"
+    fi
+    if [[ -n "$version_directory" ]]; then
+      rm -rf -- "$latest_staging" "$version_directory" >/dev/null 2>&1 || residual="$version_directory"
+    fi
+  fi
+  if [[ "$metadata_committed" == true && -n "$gallery" ]]; then
+    rebuild_gallery >/dev/null 2>&1 || residual="$root_prefix$gallery"
+  fi
+  if [[ -n "$residual" ]]; then
+    json_error publication "$message; cleanup also failed" 5 "$residual"
+  fi
+  json_error publication "$message" 5
 }
 
-destination="$generation_directory/$primary_path"
+if ! version="$(jq -r '(.versions // [] | map(.version) | max // 0) + 1' <<<"${previous_metadata:-null}")"; then
+  publication_failure 'version number could not be allocated'
+fi
+next_version="$artifact_directory/v$version"
+# A crash between copying and recording a version leaves an unrecorded directory.
+if [[ -e "$next_version" || -L "$next_version" ]]; then
+  rm -rf -- "$next_version" >/dev/null 2>&1 \
+    || json_error publication 'unrecorded version directory could not be removed' 5 "$next_version"
+fi
+mkdir -- "$next_version" >/dev/null 2>&1 \
+  || publication_failure 'version directory could not be allocated'
+version_directory="$next_version"
+
+destination="$version_directory/$primary_path"
 for index in "${!source_entries[@]}"; do
   relative="${source_entries[index]}"
-  entry_destination="$generation_directory/$relative"
+  entry_destination="$version_directory/$relative"
   if [[ "${source_types[index]}" == directory ]]; then
     ensure_owned_directory "$entry_destination" \
       || publication_failure 'source directory could not be copied'
@@ -422,8 +550,8 @@ for index in "${!source_entries[@]}"; do
   if ! canonical_entry="$(realpath -e -- "$entry_destination" 2>/dev/null)"; then
     publication_failure 'published result could not be canonicalized'
   fi
-  [[ "$canonical_entry" == "$generation_directory/$relative" ]] \
-    || publication_failure 'published result escaped its generation or traversed a symlink'
+  [[ "$canonical_entry" == "$version_directory/$relative" ]] \
+    || publication_failure 'published result escaped its version or traversed a symlink'
 done
 [[ -f "$destination" && ! -L "$destination" ]] \
   || publication_failure 'published result is not a real regular file'
@@ -433,14 +561,48 @@ fi
 [[ "$canonical_destination" == "$root_prefix"* ]] \
   || publication_failure 'published result escaped the configured root'
 
-relative_path="${canonical_destination#"$root_prefix"}"
-if ! encoded_path="$(jq -rn --arg path "$relative_path" '$path | split("/") | map(@uri) | join("/")')"; then
+if ! result="$(jq -cn --arg base "$base_url" --arg artifact "${artifact_directory#"$root_prefix"}" \
+  --arg primary "$primary_path" --argjson version "$version" --arg path "$canonical_destination" \
+  --arg gallery "$gallery" '
+  def encode: split("/") | map(@uri) | join("/");
+  "\($base)/\($artifact | encode)/" as $url
+  | {status: "published", url: $url, version: $version,
+     versionUrl: "\($url)v\($version)/\($primary | encode)",
+     latestUrl: "\($url)latest/\($primary | encode)", path: $path}
+    + if $gallery == "" then {} else {galleryUrl: "\($base)/\($gallery)/"} end')"; then
   publication_failure 'published URL could not be encoded'
 fi
-if ! result="$(jq -cn --arg path "$canonical_destination" --arg url "$base_url/$encoded_path" \
-  '{status:"published",path:$path,url:$url}')"; then
-  publication_failure 'published result could not be serialized'
+if ! metadata="$(jq --arg repository "$repository_group" --arg producer "$producer" --arg slug "$slug" \
+  --arg title "$title" --argjson titled "$title_given" --argjson version "$version" \
+  --arg primary "$primary_path" --arg publishedAt "$published_at" '
+  {schema: 1, repository: $repository, producer: $producer, slug: $slug,
+   title: (if $titled then $title else .title // $slug end),
+   versions: ((.versions // []) + [{version: $version, primary: $primary, publishedAt: $publishedAt}])}
+  ' <<<"${previous_metadata:-null}")"; then
+  publication_failure 'artifact metadata could not be serialized'
 fi
+
+{ rm -rf -- "$latest_staging" && cp -R -P -T -- "$version_directory" "$latest_staging"; } >/dev/null 2>&1 \
+  || publication_failure 'latest copy could not be prepared'
+replace_file "$artifact_directory/index.html" "$viewer_html" >/dev/null 2>&1 \
+  || publication_failure 'artifact viewer could not be written'
+replace_file "$metadata_path" "$metadata" >/dev/null 2>&1 \
+  || publication_failure 'artifact metadata could not be written'
+metadata_committed=true
+if [[ -e "$latest_path" || -L "$latest_path" ]]; then
+  mv --exchange -T -- "$latest_staging" "$latest_path" >/dev/null 2>&1 \
+    || publication_failure 'latest version could not be swapped'
+  latest_exchanged=true
+else
+  mv -T -- "$latest_staging" "$latest_path" >/dev/null 2>&1 \
+    || publication_failure 'latest version could not be placed'
+  latest_created=true
+fi
+if [[ -n "$gallery" ]]; then
+  rebuild_gallery >/dev/null 2>&1 || publication_failure 'gallery could not be rebuilt'
+fi
+
 if ! printf '%s\n' "$result"; then
   publication_failure 'published result could not be emitted'
 fi
+rm -rf -- "$latest_staging" >/dev/null 2>&1 || :
