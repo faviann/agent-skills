@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Artifact</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8; --fg: #1f1e1c; --muted: #6d6b66; --line: #e6e3dc; --chip: #f2efe9; --accent: #b4532a;
+    font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1a; --fg: #ebe9e4; --muted: #a29f98; --line: #34332f; --chip: #272624; --accent: #e3916a; }
+  }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg); }
+  header { display: flex; align-items: center; gap: 12px; padding: 7px 14px; border-bottom: 1px solid var(--line); }
+  header[hidden] { display: none; }
+  h1 { flex: 1; min-width: 0; margin: 0; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  select { font: inherit; color: inherit; background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  a { color: var(--muted); text-decoration: none; }
+  a:hover { color: var(--accent); }
+  main { flex: 1; position: relative; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+  iframe.markdown { background: transparent; }
+  .notice { max-width: 30rem; margin: 18vh auto 0; padding: 0 24px; text-align: center; color: var(--muted); }
+  .notice strong { display: block; margin-bottom: 6px; color: var(--fg); font-size: 16px; }
+</style>
+</head>
+<body>
+<header id="header" hidden>
+  <h1 id="title"></h1>
+  <select id="version" aria-label="Version"></select>
+  <a id="raw" target="_blank" rel="noreferrer">raw</a>
+</header>
+<main id="main"></main>
+<script type="module">
+  const MARKED = 'https://cdn.jsdelivr.net/npm/marked@18.1.1/lib/marked.esm.js';
+  const HIGHLIGHT = 'https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/es/highlight.min.js';
+  const HIGHLIGHT_STYLES = 'https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.12.0/styles/';
+  const POLL_MS = 10000;
+  const MARKDOWN_CSS = `
+    :root { color-scheme: light dark; --bg: #fff; --fg: #1f1e1c; --muted: #6d6b66; --line: #e6e3dc; --code: #f5f3ef; --accent: #b4532a; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #1b1b1a; --fg: #e8e6e1; --muted: #a29f98; --line: #383733; --code: #252523; --accent: #e3916a; }
+    }
+    html { background: var(--bg); color: var(--fg); }
+    body { margin: 0; padding: 40px 24px 72px; font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    article { max-width: 46rem; margin: 0 auto; overflow-wrap: break-word; }
+    h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.8em 0 .6em; font-weight: 650; }
+    h1 { font-size: 2em; margin-top: 0; padding-bottom: .3em; border-bottom: 1px solid var(--line); }
+    h2 { font-size: 1.45em; padding-bottom: .25em; border-bottom: 1px solid var(--line); }
+    h3 { font-size: 1.2em; }
+    p, ul, ol, blockquote, pre, table { margin: 0 0 1em; }
+    a { color: var(--accent); }
+    img { max-width: 100%; height: auto; }
+    hr { border: 0; border-top: 1px solid var(--line); margin: 2em 0; }
+    blockquote { margin-left: 0; padding: 0 1em; border-left: 3px solid var(--line); color: var(--muted); }
+    code { font: .875em/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code); border-radius: 4px; padding: .15em .35em; }
+    pre { background: var(--code); border-radius: 8px; padding: 14px 16px; overflow: auto; }
+    pre code, pre code.hljs { background: transparent; padding: 0; }
+    table { border-collapse: collapse; display: block; overflow: auto; }
+    th, td { border: 1px solid var(--line); padding: 6px 12px; }
+    th { background: var(--code); text-align: left; }
+    li + li { margin-top: .25em; }
+  `;
+
+  const header = document.getElementById('header');
+  const main = document.getElementById('main');
+  const select = document.getElementById('version');
+  const titleElement = document.getElementById('title');
+  const raw = document.getElementById('raw');
+  let artifact = null;
+  let shownFile = null;
+
+  const encodePath = (path) => path.split('/').map(encodeURIComponent).join('/');
+  const escapeAttribute = (value) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const latest = () => artifact.versions[artifact.versions.length - 1];
+  const pinnedVersion = () => {
+    const match = /^#v(\d+)$/.exec(location.hash);
+    return match ? Number(match[1]) : null;
+  };
+
+  async function fetchArtifact() {
+    const response = await fetch(`./artifact.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`artifact.json returned HTTP ${response.status}`);
+    const data = await response.json();
+    if (!Array.isArray(data.versions) || data.versions.length === 0) throw new Error('artifact.json lists no versions');
+    return data;
+  }
+
+  function showNotice(heading, detail) {
+    header.hidden = true;
+    shownFile = null;
+    const notice = document.createElement('div');
+    notice.className = 'notice';
+    const strong = document.createElement('strong');
+    strong.textContent = heading;
+    notice.append(strong, detail);
+    main.replaceChildren(notice);
+  }
+
+  function render() {
+    const pinned = pinnedVersion();
+    const version = artifact.versions.find((entry) => entry.version === pinned);
+    if (pinned !== null && !version) history.replaceState(null, '', location.pathname + location.search);
+    const shown = version ?? latest();
+    document.title = artifact.title;
+    titleElement.textContent = artifact.title;
+    titleElement.title = artifact.title;
+    const total = artifact.versions.length;
+    select.replaceChildren(
+      new Option(`latest (v${latest().version})`, ''),
+      ...artifact.versions.slice().reverse().map((entry) => new Option(`v${entry.version} of ${total}`, `v${entry.version}`)),
+    );
+    select.value = version ? `v${version.version}` : '';
+    const file = `v${shown.version}/${encodePath(shown.primary)}`;
+    raw.href = file;
+    header.hidden = false;
+    if (file !== shownFile) {
+      shownFile = file;
+      showFrame(shown.primary, file).catch((error) => showNotice('This version could not be displayed.', error.message));
+    }
+  }
+
+  async function showFrame(primary, file) {
+    const frame = document.createElement('iframe');
+    frame.title = artifact.title;
+    frame.referrerPolicy = 'no-referrer';
+    if (/\.md$/i.test(primary)) {
+      const documentHtml = await markdownDocument(file);
+      if (file !== shownFile) return;
+      frame.className = 'markdown';
+      frame.setAttribute('sandbox', 'allow-same-origin allow-popups allow-popups-to-escape-sandbox');
+      frame.addEventListener('load', () => followInPageLinks(frame));
+      frame.srcdoc = documentHtml;
+    } else {
+      frame.src = file;
+    }
+    main.replaceChildren(frame);
+  }
+
+  async function markdownDocument(file) {
+    const [{ marked }, { default: hljs }, text] = await Promise.all([
+      import(MARKED),
+      import(HIGHLIGHT),
+      fetch(file).then((response) => {
+        if (!response.ok) throw new Error(`${file} returned HTTP ${response.status}`);
+        return response.text();
+      }),
+    ]);
+    const template = document.createElement('template');
+    template.innerHTML = marked.parse(text);
+    for (const block of template.content.querySelectorAll('pre code')) hljs.highlightElement(block);
+    for (const heading of template.content.querySelectorAll('h1, h2, h3, h4, h5, h6')) {
+      heading.id ||= heading.textContent.trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-');
+    }
+    const base = new URL(file.replace(/[^/]*$/, ''), location.href).href;
+    return `<!doctype html><html><head><meta charset="utf-8">
+      <meta name="referrer" content="no-referrer">
+      <base href="${escapeAttribute(base)}" target="_blank">
+      <link rel="stylesheet" href="${HIGHLIGHT_STYLES}github.min.css" media="(prefers-color-scheme: light)">
+      <link rel="stylesheet" href="${HIGHLIGHT_STYLES}github-dark.min.css" media="(prefers-color-scheme: dark)">
+      <style>${MARKDOWN_CSS}</style></head><body><article>${template.innerHTML}</article></body></html>`;
+  }
+
+  // The base element points every link at the version directory, so in-page
+  // anchors would otherwise open that directory in a new tab.
+  function followInPageLinks(frame) {
+    const frameDocument = frame.contentDocument;
+    frameDocument?.addEventListener('click', (event) => {
+      const link = event.target.closest?.('a[href^="#"]');
+      if (!link) return;
+      event.preventDefault();
+      frameDocument.getElementById(decodeURIComponent(link.getAttribute('href').slice(1)))?.scrollIntoView();
+    });
+  }
+
+  async function poll() {
+    if (!artifact || pinnedVersion() !== null || document.visibilityState !== 'visible') return;
+    try {
+      const next = await fetchArtifact();
+      const changed = next.versions[next.versions.length - 1].version !== latest().version || next.title !== artifact.title;
+      artifact = next;
+      if (changed && pinnedVersion() === null) render();
+    } catch {
+      // Keep showing the last good state; the next poll retries.
+    }
+  }
+
+  select.addEventListener('change', () => {
+    history.pushState(null, '', select.value ? `#${select.value}` : location.pathname + location.search);
+    render();
+    poll();
+  });
+  window.addEventListener('popstate', () => artifact && render());
+  window.addEventListener('hashchange', () => artifact && render());
+  document.addEventListener('visibilitychange', poll);
+  setInterval(poll, POLL_MS);
+
+  try {
+    artifact = await fetchArtifact();
+    render();
+  } catch (error) {
+    showNotice('This artifact is not available.', `Its metadata could not be loaded: ${error.message}`);
+  }
+</script>
+</body>
+</html>

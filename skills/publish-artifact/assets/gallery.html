@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Artifacts</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8; --fg: #1f1e1c; --muted: #6d6b66; --line: #e6e3dc; --chip: #f2efe9; --accent: #b4532a;
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1a; --fg: #ebe9e4; --muted: #a29f98; --line: #34332f; --chip: #272624; --accent: #e3916a; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); }
+  header { position: sticky; top: 0; display: flex; align-items: center; gap: 12px; padding: 10px 20px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  h1 { flex: 1; margin: 0; font-size: 15px; font-weight: 600; }
+  input { width: min(18rem, 50vw); font: inherit; color: inherit; background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; }
+  main { max-width: 52rem; margin: 0 auto; padding: 12px 20px 48px; }
+  h2 { margin: 26px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 8px; }
+  li + li { border-top: 1px solid var(--line); }
+  li a { display: flex; align-items: baseline; gap: 12px; padding: 9px 14px; color: inherit; text-decoration: none; }
+  li a:hover { background: var(--chip); }
+  li a:hover .title { color: var(--accent); }
+  .title { flex: 1; min-width: 0; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+  .notice { margin: 18vh 0 0; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Artifacts</h1>
+  <input id="filter" type="search" placeholder="Filter" aria-label="Filter artifacts" autofocus>
+</header>
+<main id="main"></main>
+<script type="module">
+  const main = document.getElementById('main');
+  const filter = document.getElementById('filter');
+  const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const units = [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]];
+  let artifacts = [];
+
+  function ago(timestamp) {
+    const seconds = (Date.parse(timestamp) - Date.now()) / 1000;
+    if (Number.isNaN(seconds)) return '';
+    for (const [unit, size] of units) {
+      if (Math.abs(seconds) >= size) return relative.format(Math.round(seconds / size), unit);
+    }
+    return 'just now';
+  }
+
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function render() {
+    const query = filter.value.trim().toLowerCase();
+    const matches = artifacts.filter((artifact) =>
+      [artifact.title, artifact.slug, artifact.producer, artifact.repository].some((field) => String(field).toLowerCase().includes(query)));
+    if (matches.length === 0) {
+      main.replaceChildren(element('p', 'notice', artifacts.length ? 'No artifacts match this filter.' : 'Nothing has been published yet.'));
+      return;
+    }
+    const groups = new Map();
+    for (const artifact of matches) {
+      if (!groups.has(artifact.repository)) groups.set(artifact.repository, []);
+      groups.get(artifact.repository).push(artifact);
+    }
+    main.replaceChildren(...[...groups].flatMap(([repository, entries]) => {
+      const list = element('ul');
+      for (const artifact of entries) {
+        const link = element('a');
+        link.href = artifact.url;
+        link.rel = 'noreferrer';
+        const updated = element('span', 'meta', ago(artifact.updatedAt));
+        updated.title = artifact.updatedAt;
+        const versions = `${artifact.versions} version${artifact.versions === 1 ? '' : 's'}`;
+        link.append(element('span', 'title', artifact.title), element('span', 'meta', `${artifact.producer} · ${versions}`), updated);
+        const item = element('li');
+        item.append(link);
+        list.append(item);
+      }
+      return [element('h2', '', repository), list];
+    }));
+  }
+
+  filter.addEventListener('input', render);
+  try {
+    const response = await fetch(`./gallery.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`gallery.json returned HTTP ${response.status}`);
+    artifacts = await response.json();
+    render();
+  } catch (error) {
+    main.replaceChildren(element('p', 'notice', `The gallery could not be loaded: ${error.message}`));
+  }
+</script>
+</body>
+</html>
