@@ -19,6 +19,10 @@ this repository as a submodule source.
   worktrees, herd checks, desktop and phone notifications, and settings worth
   suggesting. Its `hooks/session-start.sh` primes each session to load the
   skill; register it as a Claude Code `SessionStart` hook.
+- [`quest-3s`](skills/quest-3s/SKILL.md) — connects adb to faviann's Meta Quest
+  3S over Tailscale, including from hosts whose tailscaled runs in userspace
+  networking mode, and records the headset's quirks. `scripts/quest-connect.sh`
+  diagnoses each failure and names the fix a person must make.
 
 ## Tests
 
