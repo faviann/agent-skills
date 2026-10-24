@@ -49,7 +49,7 @@ else
     mkdir -p "$log_dir"
     setsid nohup python3 "$here/tailnet-forward.py" "$ip" 5555 "$local_port" \
       >>"$log_dir/forward.log" 2>&1 </dev/null &
-    for _ in 1 2 3 4 5 6 7 8 9 10; do tcp_open 127.0.0.1 "$local_port" && break; sleep 0.3; done
+    for _ in {1..10}; do tcp_open 127.0.0.1 "$local_port" && break; sleep 0.3; done
     tcp_open 127.0.0.1 "$local_port" || { say "forwarder failed to start; see $log_dir/forward.log"; exit 1; }
     say "started forwarder 127.0.0.1:$local_port -> $ip:5555 (log: $log_dir/forward.log)"
   fi
@@ -57,8 +57,7 @@ else
 fi
 
 timeout 20 adb connect "$serial" >&2
-state=unknown
-for _ in 1 2 3 4 5; do
+for _ in {1..5}; do
   state=$(adb -s "$serial" get-state 2>&1)
   [[ $state == device ]] && break
   sleep 1

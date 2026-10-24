@@ -4,13 +4,13 @@
 For hosts whose tailscaled runs with --tun=userspace-networking: ordinary sockets
 (adb included) can't reach tailnet IPs there, but `tailscale nc` can.
 
-Usage: tailnet-forward.py <tailnet-host> <port> [local-port]
+Usage: tailnet-forward.py <tailnet-host> <port> <local-port>
 """
 import asyncio
+import contextlib
 import sys
 
-HOST, PORT = sys.argv[1], sys.argv[2]
-LOCAL = int(sys.argv[3]) if len(sys.argv) > 3 else 5556
+HOST, PORT, LOCAL = sys.argv[1], sys.argv[2], int(sys.argv[3])
 
 
 async def pump(reader, writer):
@@ -29,7 +29,8 @@ async def handle(client_r, client_w):
     print(f"connection -> {HOST}:{PORT} (pid {proc.pid})", flush=True)
     await asyncio.gather(pump(client_r, proc.stdin), pump(proc.stdout, client_w),
                          return_exceptions=True)
-    proc.kill()
+    with contextlib.suppress(ProcessLookupError):  # tailscale nc may have exited already
+        proc.kill()
     print(f"closed pid {proc.pid}", flush=True)
 
 
