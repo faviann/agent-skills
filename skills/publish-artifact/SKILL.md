@@ -1,6 +1,6 @@
 ---
 name: publish-artifact
-description: Publish a finished file or directory tree to a stable, versioned URL through a host-configured mapping. Use whenever an agent produces something the person should open in a browser, such as an HTML report, a Markdown document, or a prototype, including another skill's output and even when nobody asked for a link; when the person asks to publish or update a published file or directory; or when they ask to configure the host mapping.
+description: Use before you hand the person any HTML page, report, chart, dashboard, Markdown document, prototype, or other file or directory you made for them to view in a browser, even when they asked only for something they can open or look at and never mentioned publishing or a link. It publishes the work to artifact-server and returns a private review link to give them instead of a local path or file:// URL. Also use to read or answer comments on a published artifact, make it public or private again, or configure publishing on this host.
 ---
 
 # Publish Artifact
