@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly FIXTURE_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
+SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPTS
+FIXTURE_ROOT="$(mktemp -d)"
+FIXTURE_ROOT="$(cd "$FIXTURE_ROOT" && pwd -P)"
+readonly FIXTURE_ROOT
 trap 'rm -rf "$FIXTURE_ROOT"' EXIT
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
