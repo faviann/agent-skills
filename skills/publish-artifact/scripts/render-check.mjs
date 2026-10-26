@@ -111,6 +111,14 @@ async function bootstrapUrl({server, artifactId, token}) {
   return (await response.json()).bootstrapUrl;
 }
 
+async function setContentSessionCookie(context, target) {
+  const bootstrap = new URL(await bootstrapUrl(target));
+  const exchange = await context.request.get(bootstrap.href);
+  if (!exchange.ok()) throw new Error(`content session exchange: HTTP ${exchange.status()}`);
+  bootstrap.searchParams.delete("__artifact_bootstrap");
+  return bootstrap.href;
+}
+
 const {values, positionals} = parseArgs({
   allowPositionals: true,
   options: {
@@ -133,16 +141,7 @@ const report = {url: null, status: null, consoleErrors: [], pageErrors: [], fail
 let failure = null;
 try {
   const context = await browser.newContext();
-  let startUrl = target.url;
-  if (target.kind === "session") {
-    // The exchange sets the content-session cookie in the context's jar, so the
-    // page then loads the artifact itself instead of the bootstrap redirect page.
-    const bootstrap = new URL(await bootstrapUrl(target));
-    const exchange = await context.request.get(bootstrap.href);
-    if (!exchange.ok()) throw new Error(`content session exchange: HTTP ${exchange.status()}`);
-    bootstrap.searchParams.delete("__artifact_bootstrap");
-    startUrl = bootstrap.href;
-  }
+  const startUrl = target.kind === "session" ? await setContentSessionCookie(context, target) : target.url;
   const page = await context.newPage();
   page.on("console", (message) => {
     if (message.type() !== "error") return;
