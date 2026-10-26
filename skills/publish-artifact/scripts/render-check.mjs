@@ -1,16 +1,13 @@
-// Render one artifact in headless Chromium and report what broke.
-// docs/artifact-server.md has the invocation and the workstation browser setup.
-import {existsSync, readFileSync} from "node:fs";
-import {tmpdir} from "node:os";
+import {existsSync, mkdtempSync, readFileSync} from "node:fs";
+import {homedir, tmpdir} from "node:os";
 import path from "node:path";
 import {pathToFileURL} from "node:url";
 import {parseArgs} from "node:util";
 
-const DEFAULT_SERVER = "https://artifact-server.public.faviann.com";
 const ARTIFACT_ID = /^art_[0-9a-f-]{36}$/u;
 
 function usage(message) {
-  console.error(`artifact-render-check: ${message}`);
+  console.error(`render-check: ${message}`);
   console.error("usage: <artifact-id | url> [--token-file <path>] [--server <origin>] [--out <png>]");
   process.exit(2);
 }
@@ -29,13 +26,49 @@ async function loadPlaywright() {
   const entry = findOnPath((directory) =>
     path.basename(directory) === ".bin" ? path.join(directory, "..", "playwright", "index.mjs") : null
   );
-  if (entry === null) usage("playwright not found; run through `npx -y -p playwright@1.64.1 node ...`");
+  if (entry === null) usage("playwright not found; run render-check.sh");
   return import(pathToFileURL(entry).href);
+}
+
+const IDLE_WAIT_MS = 5_000;
+
+async function settleBriefly(page) {
+  try {
+    await page.waitForLoadState("networkidle", {timeout: IDLE_WAIT_MS});
+  } catch (error) {
+    if (error.name !== "TimeoutError") throw error;
+  }
+}
+
+function fatal(error) {
+  console.log(JSON.stringify({status: "error", message: String(error?.message ?? error)}));
+  process.exit(3);
+}
+
+function hostConfiguration() {
+  const configHome = path.isAbsolute(process.env.XDG_CONFIG_HOME ?? "")
+    ? process.env.XDG_CONFIG_HOME
+    : path.join(homedir(), ".config");
+  const file = path.join(configHome, "faviann-skills", "artifact-server.json");
+  if (!existsSync(file)) return {};
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    usage(`${file} is not valid JSON`);
+  }
+}
+
+function readToken(file) {
+  try {
+    return readFileSync(file, "utf8").trim();
+  } catch {
+    usage(`cannot read token file ${file}`);
+  }
 }
 
 function resolveTarget(target, server, token) {
   if (ARTIFACT_ID.test(target)) {
-    if (token === null) usage("an artifact id needs --token-file");
+    if (token === null || !server) usage("an artifact id needs a server and token file from --server and --token-file, or from the host configuration");
     return {kind: "session", server, artifactId: target};
   }
   try {
@@ -60,25 +93,26 @@ const {values, positionals} = parseArgs({
   allowPositionals: true,
   options: {
     "token-file": {type: "string"},
-    server: {type: "string", default: DEFAULT_SERVER},
+    server: {type: "string"},
     out: {type: "string"},
   },
 });
 if (positionals.length !== 1) usage("expected exactly one artifact id or URL");
 
-const token = values["token-file"] === undefined
-  ? null
-  : readFileSync(values["token-file"], "utf8").trim();
-const target = resolveTarget(positionals[0], values.server.replace(/\/+$/u, ""), token);
+const host = hostConfiguration();
+const tokenFile = values["token-file"] ?? host.tokenFile;
+const token = tokenFile !== undefined && ARTIFACT_ID.test(positionals[0]) ? readToken(tokenFile) : null;
+const server = (values.server ?? host.server ?? "").replace(/\/+$/u, "");
+const target = resolveTarget(positionals[0], server, token);
 const screenshot = path.resolve(
-  values.out ?? path.join(tmpdir(), `artifact-render-${process.pid}.png`),
+  values.out ?? path.join(mkdtempSync(path.join(tmpdir(), "artifact-render-")), "render.png"),
 );
 const {chromium} = await loadPlaywright();
-// Playwright's downloaded browser lacks its system libraries on the workstation.
 const browser = await chromium.launch({
   executablePath: findOnPath((directory) => path.join(directory, "chromium")) ?? undefined,
-});
+}).catch(fatal);
 const report = {url: null, status: null, consoleErrors: [], pageErrors: [], failedRequests: [], screenshot};
+let failure = null;
 try {
   const context = await browser.newContext();
   let startUrl = target.url;
@@ -93,7 +127,10 @@ try {
   }
   const page = await context.newPage();
   page.on("console", (message) => {
-    if (message.type() === "error") report.consoleErrors.push(message.text());
+    if (message.type() !== "error") return;
+    // Chromium requests /favicon.ico on its own, and most artifacts ship none.
+    if (new URL(message.location().url || "about:blank").pathname === "/favicon.ico") return;
+    report.consoleErrors.push(message.text());
   });
   page.on("pageerror", (error) => report.pageErrors.push(String(error)));
   page.on("requestfailed", (request) => {
@@ -103,14 +140,16 @@ try {
     if (response.status() >= 400) report.failedRequests.push({url: response.url(), status: response.status()});
   });
   const response = await page.goto(startUrl, {waitUntil: "load", timeout: 60_000});
-  // A page that polls never goes idle; report what it did in the first seconds.
-  await page.waitForLoadState("networkidle", {timeout: 5_000}).catch(() => {});
+  await settleBriefly(page);
   report.status = response?.status() ?? null;
   report.url = page.url();
   await page.screenshot({path: screenshot, fullPage: true});
+} catch (error) {
+  failure = error;
 } finally {
   await browser.close();
 }
+if (failure !== null) fatal(failure);
 
 console.log(JSON.stringify(report, null, 2));
 const ok = report.status !== null && report.status >= 200 && report.status < 300 &&
