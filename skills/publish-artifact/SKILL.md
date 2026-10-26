@@ -1,42 +1,57 @@
 ---
 name: publish-artifact
-description: Publish a finished file or directory tree to a stable, versioned URL through a host-configured mapping. Use whenever an agent produces something the person should open in a browser, such as an HTML report, a Markdown document, or a prototype, including another skill's output and even when nobody asked for a link; when the person asks to publish or update a published file or directory; or when they ask to configure the host mapping.
+description: Use before you hand the person any HTML page, report, chart, dashboard, Markdown document, prototype, or other file or directory you made for them to view in a browser, even when they asked only for something they can open or look at and never mentioned publishing or a link. It publishes the work to artifact-server and returns a private review link to give them instead of a local path or file:// URL. Also use to read or answer comments on a published artifact, make it public or private again, or configure publishing on this host.
 ---
 
 # Publish Artifact
 
-Publish one completed regular file or prepared directory tree at a stable URL. Every publication is an immutable version, and publishing the same slug again adds a version behind the same URL. The bundled command is the publication seam: it owns configuration, repository grouping, artifact lookup, version allocation, copying, cleanup, the viewer page, the optional gallery, URL construction, and result classification. Invoke it directly so every producer gets the same behaviour.
+Publish a finished file or directory tree to artifact-server, check that it renders, and hand the person its private review link. `<skill-directory>` below is the directory holding this file.
 
-## Publish from another skill
+## Publish
 
-1. Finish the source file or directory tree and keep it unchanged until the command returns. Pass the narrowest exact publication set: the command copies the complete tree without filtering, merging, renaming, or transforming it.
-2. From the producing repository or workspace, invoke the command with four arguments and an optional title:
+1. Finish the source and keep it unchanged until the command returns. Stage only the files to publish in one directory, because the whole tree is uploaded. A directory opens its `index.html`, so add one when the report has another name. A single file is its own entry. Markdown is served as raw text, so convert a Markdown document to an `index.html` page and publish that.
+2. Publish:
 
    ```bash
-   <skill-directory>/scripts/publish-artifact.sh <producer-slug> <artifact-slug> <absolute-source-file-or-directory> <relative-primary-path> [title]
+   <skill-directory>/scripts/publish.sh <path> [--name <name>]
    ```
 
-   Use a stable lowercase producer slug such as `architecture-report`. The artifact slug names the page, such as `auth-migration-plan`. Reuse it to publish a new version of that page, including from a later session, and choose a new slug for a new page. Both slugs are lowercase letters and digits joined by single hyphens. The title heads the viewer page: pass it on the first publication and whenever it should change, up to 200 characters. Without a title, the stored one stays, and a new artifact uses its slug.
+   Pass a short `--name` for a new artifact. The artifact stays private, and the command never makes it public.
+3. Read the JSON result.
 
-   For a file, pass its basename as the relative primary path; for a directory, pass the path of one contained regular file relative to that directory. A primary ending in `.md` renders as formatted Markdown in the viewer, so publish Markdown directly. The working directory supplies repository context.
+   - `links.review` is present — the artifact is published. Keep `artifact.id` and `artifact.currentVersionId`.
+   - `{"status":"unconfigured"}` — let the producer preserve its normal local handoff without advertising missing configuration.
+   - `status` is `error` — the publish failed. `category` is `invalid-call`, `configuration`, `dependency`, or `publication`. Read [HOST-CONFIGURATION.md](HOST-CONFIGURATION.md) for `configuration` and `dependency`. When a `publication` message says the input changed while an earlier attempt is pending, restore the original files at that path and run the same command again, so the CLI finishes the earlier attempt. The rerun publishes the original files, so reapply your edits afterward and publish them as a new version with `--artifact` and `--expected-version` from `artifact_get`, as [Publish a new version](#publish-a-new-version) shows. Only when you cannot restore them, publish a copy at a new path. The earlier attempt then stays unreconciled and may already have created an artifact or a version, so look for a duplicate with the MCP tools `artifact_list` and `artifact_version_list`.
+4. Check the render before you hand the link over:
 
-   Source trees contain only real directories and regular files with valid UTF-8 names. Primary paths are relative and free of traversal and control characters. Symlinked ancestors outside the source are allowed. Symlinks at the source itself or within its tree and special filesystem entries are refused.
+   ```bash
+   <skill-directory>/scripts/render-check.sh <artifact.id>
+   ```
 
-   Preparation space and publication space must not overlap: the source and configured publishing root must resolve to separate locations, with neither containing the other. The command rejects overlap as `invalid-call` before writing.
+   Exit 1 means the page broke. Either `status` is not 2xx, or `consoleErrors` or `pageErrors` say how. Fix the source, publish a new version, and check again. Exit 2 or 3 means the check could not run, so fix the invocation or the environment and leave the page alone. Always read `failedRequests`, and open the PNG named by `screenshot` to confirm the page shows what you meant to publish.
+5. Hand the person the `links.review` of the final version and no other link. A review link pins its version, so a link from an earlier version shows the earlier page.
 
-3. Read the single JSON result and finish according to its `status`:
+## Publish a new version
 
-   - `published` — return its `url` and `path` without an HTTP verification request. `url` is the viewer page for people: it follows the newest version and offers the earlier ones. Hand `latestUrl` to a service that fetches raw content, and `versionUrl` when a reference must stay pinned to this version. `galleryUrl` appears when the host configures a gallery; return it only when the person asks for their published artifacts.
-   - `unconfigured` — let the producer preserve its normal local handoff without advertising missing configuration.
-   - `error` — treat the failure as terminal; nothing new was published. The nonzero result carries one stable `category`: `invalid-call`, `configuration`, `dependency`, or `publication`.
+Publish again with the artifact and its current version, to keep one artifact and one comment history:
 
-## Publish an artifact named by a person
+```bash
+<skill-directory>/scripts/publish.sh <path> --artifact <artifact-id> --expected-version <version-id>
+```
 
-1. Resolve the named source to an absolute path without following a source symlink.
-2. Confirm it is a regular file or directory. A file is its own primary; for a directory, use the person's named primary or one unambiguously implied by their request. If the primary is ambiguous, ask them to name it.
-3. Invoke the same command with producer `manual`, a slug describing the artifact, and the primary's relative path. To update an earlier publication, reuse its slug, the segment of its `url` before the random suffix.
-4. Return the command's JSON result.
+After your own publish, `artifact.currentVersionId` is the version id. In a later session, read it from the MCP tool `artifact_get`. The result's `links.review` is the new link.
+
+## Read and answer comments
+
+When the person says they left comments, or before you publish a revision, list the threads over MCP. The `artifact-server` MCP tools exist when the host registers the server.
+
+1. `comment_list` with `artifactId` and `dispatched: "include"`.
+2. Act on each thread. Answer with `comment_reply` (`artifactId`, `threadId`, `body`, and an `idempotencyKey` of at least 16 characters). Call `comment_resolve` (`artifactId`, `threadId`, `resolved: true`) once the change is published.
+
+## Make an artifact public
+
+Only when the person asks. Call `artifact_get` for `artifact.currentVersionId`, then `artifact_set_visibility` with `accessSetting: "public_link"`, that id as `expectedCurrentVersionId`, and a fresh `idempotencyKey`. Return `links.artifact` from the result. It opens without sign-in and follows the newest version. `accessSetting: "account_required"` makes the artifact private again.
 
 ## Host configuration
 
-When the person asks to configure the host mapping or the gallery, or the result is `unconfigured`, `configuration`, or `dependency`, read [HOST-CONFIGURATION.md](HOST-CONFIGURATION.md).
+When the person asks to configure publishing, or the result is `unconfigured`, `configuration`, or `dependency`, read [HOST-CONFIGURATION.md](HOST-CONFIGURATION.md).

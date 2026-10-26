@@ -37,7 +37,7 @@ A pane is watchable live, scrollable, takes the user's keystrokes, and outlives 
 
 - a terminal app or CLI output: run it in a pane, driven to the state in question with keys that only navigate;
 - data a picture explains faster (timings, sizes, trends, the herd), a tree (inheritance, package layout), or a choice between layouts: the canvas;
-- relationships: a small graph as a text diagram in chat; a larger or tangled one, or a chart or page that needs a browser, through the `dataviz` and `publish-artifact` skills, then send the link;
+- relationships: a small graph as a text diagram in chat; a larger or tangled one, or a chart or page that needs a browser, through the `dataviz` and `publish-artifact` skills, then send the review link;
 - a code change: a review pane (below);
 - a few lines of text: chat.
 
