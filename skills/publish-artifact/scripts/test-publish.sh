@@ -148,6 +148,9 @@ export const chromium = {
     if (mode === "launch-fail") {
       throw new Error("browserType.launch: Target page, context or browser has been closed\nBrowser logs:\n\n[pid=1][err] chromium: error while loading shared libraries: libnss3.so: cannot open shared object file\nCall log:\n  - <launching> chromium --headless");
     }
+    if (mode === "no-browser") {
+      throw new Error("browserType.launch: Executable doesn't exist at /cache/chrome-headless-shell\n╔══════════════════════╗\n║ Looks like Playwright was just installed or updated. ║\n║     npx playwright install                           ║\n╚══════════════════════╝");
+    }
     return {newContext: async () => ({request, newPage: async () => page}), close: async () => {}};
   },
 };
@@ -179,6 +182,15 @@ scenario 'render-check.mjs says why the browser did not launch, without the call
 status=0; output="$(check_page launch-fail)" || status=$?
 [[ "$(jq -r .message <<<"$output")" == *libnss3.so* ]] || fail "launch failure cause lost: $output"
 [[ "$(jq -r .message <<<"$output")" != *'Call log'* ]] || fail "call log printed: $output"
+
+scenario 'render-check.mjs tells a host with no browser to put chromium on PATH, without Playwright install banner'
+status=0; output="$(check_page no-browser)" || status=$?
+message="$(jq -r .message <<<"$output")"
+[[ "$status" -eq 3 && "$message" == "browserType.launch: Executable doesn't exist at /cache/chrome-headless-shell"* ]] || fail "no-browser exited $status: $output"
+[[ "$message" != *'npx playwright install'* && "$message" != *'╔'* && "$message" != *'║'* ]] || fail "Playwright banner printed: $output"
+[[ "$message" == *'put chromium on PATH (see HOST-CONFIGURATION.md)' ]] || fail "chromium hint missing: $output"
+output="$(check_page launch-fail)" || true
+[[ "$(jq -r .message <<<"$output")" != *'put chromium on PATH'* ]] || fail "chromium hint added to a launch failure: $output"
 
 scenario 'render-check.mjs never prints the content-session bootstrap token'
 fetch_log="$FIXTURE_ROOT/fetch.log"

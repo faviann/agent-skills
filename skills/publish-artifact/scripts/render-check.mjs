@@ -45,9 +45,18 @@ function withoutBootstrapToken(message) {
   return message.replace(/__artifact_bootstrap=[^&#\s]*/gu, "__artifact_bootstrap=<redacted>");
 }
 
+const MISSING_BROWSER = /^(?:browserType\.launch: )?Executable doesn't exist/u;
+const BANNER_LINE = /^[╔║╚]/u;
+
+function failureMessage(error) {
+  const [text] = String(error?.message ?? error).split("\nCall log:");
+  const lines = text.split("\n").filter((line) => !BANNER_LINE.test(line));
+  if (MISSING_BROWSER.test(lines[0])) lines.push("put chromium on PATH (see HOST-CONFIGURATION.md)");
+  return withoutBootstrapToken(lines.join("\n"));
+}
+
 function fatal(error) {
-  const [message] = String(error?.message ?? error).split("\nCall log:");
-  console.log(JSON.stringify({status: "error", message: withoutBootstrapToken(message)}));
+  console.log(JSON.stringify({status: "error", message: failureMessage(error)}));
   process.exit(3);
 }
 
