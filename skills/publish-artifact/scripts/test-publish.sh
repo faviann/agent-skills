@@ -138,13 +138,15 @@ const page = {
 };
 export const chromium = {
   async launch() {
-    if (mode === "launch-fail") throw new Error("no browser");
+    if (mode === "launch-fail") {
+      throw new Error("browserType.launch: Target page, context or browser has been closed\nBrowser logs:\n\n[pid=1][err] chromium: error while loading shared libraries: libnss3.so: cannot open shared object file\nCall log:\n  - <launching> chromium --headless");
+    }
     return {newContext: async () => ({request, newPage: async () => page}), close: async () => {}};
   },
 };
 const request = {
   async get(url) {
-    if (mode === "exchange-fail") throw new Error(`apiRequestContext.get: connect ECONNREFUSED ${url}\nCall log:\n  - GET ${url}`);
+    if (mode === "exchange-fail") throw new Error(`apiRequestContext.get: connect ECONNREFUSED\nGET ${url}\nCall log:\n  - GET ${url}`);
     return {ok: () => true, status: () => 200};
   },
 };
@@ -165,6 +167,11 @@ for mode in launch-fail goto-fail; do
   status=0; output="$(check_page "$mode")" || status=$?
   [[ "$status" -eq 3 && "$(jq -r .status <<<"$output")" == error ]] || fail "$mode exited $status: $output"
 done
+
+scenario 'render-check.mjs says why the browser did not launch, without the call log'
+status=0; output="$(check_page launch-fail)" || status=$?
+[[ "$(jq -r .message <<<"$output")" == *libnss3.so* ]] || fail "launch failure cause lost: $output"
+[[ "$(jq -r .message <<<"$output")" != *'Call log'* ]] || fail "call log printed: $output"
 
 scenario 'render-check.mjs never prints the content-session bootstrap token'
 fetch_log="$FIXTURE_ROOT/fetch.log"

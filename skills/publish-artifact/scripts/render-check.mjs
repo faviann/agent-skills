@@ -46,8 +46,8 @@ function withoutBootstrapToken(message) {
 }
 
 function fatal(error) {
-  const firstLine = String(error?.message ?? error).split("\n")[0];
-  console.log(JSON.stringify({status: "error", message: withoutBootstrapToken(firstLine)}));
+  const [message] = String(error?.message ?? error).split("\nCall log:");
+  console.log(JSON.stringify({status: "error", message: withoutBootstrapToken(message)}));
   process.exit(3);
 }
 
