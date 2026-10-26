@@ -9,7 +9,7 @@ Publish a finished file or directory tree to artifact-server, check that it rend
 
 ## Publish
 
-1. Finish the source and keep it unchanged until the command returns. Stage only the files to publish in one directory, because the whole tree is uploaded. A directory opens its `index.html`, so add one when the report has another name. A single file is its own entry.
+1. Finish the source and keep it unchanged until the command returns. Stage only the files to publish in one directory, because the whole tree is uploaded. A directory opens its `index.html`, so add one when the report has another name. A single file is its own entry. Markdown is served as raw text, so convert a Markdown document to an `index.html` page and publish that.
 2. Publish:
 
    ```bash
@@ -21,14 +21,14 @@ Publish a finished file or directory tree to artifact-server, check that it rend
 
    - `links.review` is present — the artifact is published. Keep `artifact.id` and `artifact.currentVersionId`.
    - `{"status":"unconfigured"}` — let the producer preserve its normal local handoff without advertising missing configuration.
-   - `status` is `error` — treat it as terminal. `category` is `invalid-call`, `configuration`, `dependency`, or `publication`. Read [HOST-CONFIGURATION.md](HOST-CONFIGURATION.md) for `configuration` and `dependency`. When a `publication` message says the input changed while an earlier attempt is pending, publish a copy of the directory at a new path.
+   - `status` is `error` — treat it as terminal. `category` is `invalid-call`, `configuration`, `dependency`, or `publication`. Read [HOST-CONFIGURATION.md](HOST-CONFIGURATION.md) for `configuration` and `dependency`. When a `publication` message says the input changed while an earlier attempt is pending, restore the original files at that path and run the same command again, so the CLI finishes the earlier attempt. Only when you cannot restore them, publish a copy at a new path. The earlier attempt then stays unreconciled and may already have created an artifact or a version, so look for a duplicate with the MCP tools `artifact_list` and `artifact_version_list`.
 4. Check the render before you hand the link over:
 
    ```bash
    <skill-directory>/scripts/render-check.sh <artifact.id>
    ```
 
-   Exit 1 means the page broke and `consoleErrors` or `pageErrors` say how. Fix the source, publish a new version, and check again. Exit 2 or 3 means the check could not run, so fix the invocation or the environment and leave the page alone. Always read `failedRequests`, and open the PNG named by `screenshot` to confirm the page shows what you meant to publish.
+   Exit 1 means the page broke. Either `status` is not 2xx, or `consoleErrors` or `pageErrors` say how. Fix the source, publish a new version, and check again. Exit 2 or 3 means the check could not run, so fix the invocation or the environment and leave the page alone. Always read `failedRequests`, and open the PNG named by `screenshot` to confirm the page shows what you meant to publish.
 5. Hand the person the `links.review` of the final version and no other link. A review link pins its version, so a link from an earlier version shows the earlier page.
 
 ## Publish a new version
