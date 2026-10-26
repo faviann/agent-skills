@@ -5,6 +5,7 @@ import {pathToFileURL} from "node:url";
 import {parseArgs} from "node:util";
 
 const ARTIFACT_ID = /^art_[0-9a-f-]{36}$/u;
+const ORIGIN = /^https?:\/\/[^/?#]+\/?$/u;
 
 function usage(message) {
   console.error(`render-check: ${message}`);
@@ -40,8 +41,13 @@ async function settleBriefly(page) {
   }
 }
 
+function withoutBootstrapToken(message) {
+  return message.replace(/__artifact_bootstrap=[^&#\s]*/gu, "__artifact_bootstrap=<redacted>");
+}
+
 function fatal(error) {
-  console.log(JSON.stringify({status: "error", message: String(error?.message ?? error)}));
+  const firstLine = String(error?.message ?? error).split("\n")[0];
+  console.log(JSON.stringify({status: "error", message: withoutBootstrapToken(firstLine)}));
   process.exit(3);
 }
 
@@ -62,14 +68,15 @@ function readToken(file) {
   try {
     return readFileSync(file, "utf8").trim();
   } catch {
-    usage(`cannot read token file ${file}`);
+    usage("cannot read the token file named by --token-file or the host configuration");
   }
 }
 
 function resolveTarget(target, server, token) {
   if (ARTIFACT_ID.test(target)) {
     if (token === null || !server) usage("an artifact id needs a server and token file from --server and --token-file, or from the host configuration");
-    return {kind: "session", server, artifactId: target};
+    if (!ORIGIN.test(server)) usage("the server must be an origin such as https://host");
+    return {kind: "session", server: server.replace(/\/$/u, ""), artifactId: target};
   }
   try {
     return {kind: "url", url: new URL(target).href};
@@ -102,7 +109,7 @@ if (positionals.length !== 1) usage("expected exactly one artifact id or URL");
 const host = hostConfiguration();
 const tokenFile = values["token-file"] ?? host.tokenFile;
 const token = tokenFile !== undefined && ARTIFACT_ID.test(positionals[0]) ? readToken(tokenFile) : null;
-const server = (values.server ?? host.server ?? "").replace(/\/+$/u, "");
+const server = values.server ?? host.server ?? "";
 const target = resolveTarget(positionals[0], server, token);
 const screenshot = path.resolve(
   values.out ?? path.join(mkdtempSync(path.join(tmpdir(), "artifact-render-")), "render.png"),

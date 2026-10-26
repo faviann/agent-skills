@@ -139,8 +139,21 @@ const page = {
 export const chromium = {
   async launch() {
     if (mode === "launch-fail") throw new Error("no browser");
-    return {newContext: async () => ({newPage: async () => page}), close: async () => {}};
+    return {newContext: async () => ({request, newPage: async () => page}), close: async () => {}};
   },
+};
+const request = {
+  async get(url) {
+    if (mode === "exchange-fail") throw new Error(`apiRequestContext.get: connect ECONNREFUSED ${url}\nCall log:\n  - GET ${url}`);
+    return {ok: () => true, status: () => 200};
+  },
+};
+FAKE
+cat > "$FIXTURE_ROOT/fake-fetch.mjs" <<'FAKE'
+import {appendFileSync} from "node:fs";
+globalThis.fetch = async (url) => {
+  appendFileSync(process.env.FAKE_FETCH_LOG, `${url}\n`);
+  return Response.json({bootstrapUrl: "https://content.example/?__artifact_bootstrap=BOOTSECRET&v=1"}, {status: 201});
 };
 FAKE
 check_page() { FAKE_PW="$1" PATH="$fake_pw/.bin:$bare_path" node "$SCRIPTS/render-check.mjs" https://x.example/ --out "$FIXTURE_ROOT/out.png" 2>&1; }
@@ -152,5 +165,37 @@ for mode in launch-fail goto-fail; do
   status=0; output="$(check_page "$mode")" || status=$?
   [[ "$status" -eq 3 && "$(jq -r .status <<<"$output")" == error ]] || fail "$mode exited $status: $output"
 done
+
+scenario 'render-check.mjs never prints the content-session bootstrap token'
+fetch_log="$FIXTURE_ROOT/fetch.log"
+check_session() {
+  FAKE_PW="$1" FAKE_FETCH_LOG="$fetch_log" HOME="$home" XDG_CONFIG_HOME="$home/config" PATH="$fake_pw/.bin:$bare_path" \
+    node --import "$FIXTURE_ROOT/fake-fetch.mjs" "$SCRIPTS/render-check.mjs" art_00000000-0000-0000-0000-000000000000 \
+    --out "$FIXTURE_ROOT/out.png" "${@:2}" 2>&1
+}
+status=0; check_session clean >/dev/null || status=$?; [[ "$status" -eq 0 ]] || fail "clean session exited $status"
+status=0; output="$(check_session exchange-fail)" || status=$?
+[[ "$status" -eq 3 && "$(jq -r .status <<<"$output")" == error ]] || fail "failed exchange exited $status: $output"
+[[ "$output" != *BOOTSECRET* ]] || fail "bootstrap token printed: $output"
+[[ "$(jq -r .message <<<"$output")" != *'Call log'* ]] || fail "call log printed: $output"
+
+scenario 'render-check.mjs does not echo an unreadable token file value'
+printf '%s\n' '{"server":"https://artifact.example","tokenFile":"as_key_pasted_value"}' > "$config_dir/artifact-server.json"
+status=0; output="$(check_session clean)" || status=$?
+[[ "$status" -eq 2 && "$output" == *'token file'* ]] || fail "unreadable token file exited $status: $output"
+[[ "$output" != *as_key_pasted_value* ]] || fail "token file value echoed: $output"
+printf '%s\n' "$saved" > "$config_dir/artifact-server.json"
+
+scenario 'render-check.mjs sends the key only to a server origin'
+: > "$fetch_log"
+for bad in '{"server":"https://artifact.example/some/path?x="}' '{"server":"ftp://artifact.example"}'; do
+  jq --argjson bad "$bad" '. + $bad' <<<"$saved" > "$config_dir/artifact-server.json"
+  status=0; output="$(check_session clean)" || status=$?
+  [[ "$status" -eq 2 && "$output" == *origin* ]] || fail "server $bad exited $status: $output"
+done
+printf '%s\n' "$saved" > "$config_dir/artifact-server.json"
+status=0; output="$(check_session clean --server 'http://127.0.0.1:1/x')" || status=$?
+[[ "$status" -eq 2 && "$output" == *origin* ]] || fail "--server with a path exited $status: $output"
+[[ ! -s "$fetch_log" ]] || fail "the key was sent to a non-origin server: $(<"$fetch_log")"
 
 printf 'ok\n'
