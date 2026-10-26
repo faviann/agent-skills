@@ -10,9 +10,10 @@ this repository as a submodule source.
 ## Skills
 
 - [`publish-artifact`](skills/publish-artifact/SKILL.md) — publish a finished
-  file or directory through a host-configured filesystem-to-HTTP mapping, at a
-  stable URL whose viewer page keeps every version and renders Markdown.
-  Extracted with history from the `faviann/skills` fork.
+  file or directory through the artifact-server CLI and return a private review
+  link. It checks the render in headless Chromium, reads comments over MCP, and
+  makes an artifact public only when asked. Extracted with history from the
+  `faviann/skills` fork.
 - [`herdr-playbook`](skills/herdr-playbook/SKILL.md) — makes Claude Code fluent in
   herdr inside a herdr pane. It catalogs every capability with its verified
   command so Claude uses it unprompted: visible panes, cheap helper agents,
@@ -27,6 +28,6 @@ this repository as a submodule source.
 ## Tests
 
 ```bash
-bash skills/publish-artifact/scripts/test-publish-artifact.sh
+bash skills/publish-artifact/scripts/test-publish.sh
 bash skills/herdr-playbook/scripts/test-herdr-playbook.sh
 ```
