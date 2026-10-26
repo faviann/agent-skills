@@ -85,9 +85,16 @@ mv "$home/token" "$home/token.away"
 assert_error configuration 3 publish "$site"
 mv "$home/token.away" "$home/token"
 
-scenario 'a configuration without a usable server or tokenFile is a configuration error'
+scenario 'a configuration without a usable server origin is a configuration error'
 saved="$(<"$config_dir/artifact-server.json")"
-for bad in '{"tokenFile":"/x"}' '{"server":"ftp://x","tokenFile":"/x"}' '{"server":"https://x/api","tokenFile":"/x"}' '{"server":"https://x"}' '{"server":"https://x","tokenFile":"relative"}' 'not json'; do
+for server in null '"ftp://x"' '"https://x/api"' '"https://x\\api"' '"https://x api"' '"https://x\tapi"'; do
+  jq --argjson server "$server" '.server = $server' <<<"$saved" > "$config_dir/artifact-server.json"
+  assert_error configuration 3 publish "$site"
+  [[ "$(publish "$site" | jq -r .message)" == *server* ]] || fail "server $server not rejected as a server"
+done
+
+scenario 'a configuration without a usable tokenFile is a configuration error'
+for bad in '{"server":"https://x"}' '{"server":"https://x","tokenFile":"relative"}' 'not json'; do
   printf '%s\n' "$bad" > "$config_dir/artifact-server.json"
   assert_error configuration 3 publish "$site"
 done
@@ -195,7 +202,7 @@ printf '%s\n' "$saved" > "$config_dir/artifact-server.json"
 
 scenario 'render-check.mjs sends the key only to a server origin'
 : > "$fetch_log"
-for bad in '{"server":"https://artifact.example/some/path?x="}' '{"server":"ftp://artifact.example"}'; do
+for bad in '{"server":"https://artifact.example/some/path?x="}' '{"server":"ftp://artifact.example"}' '{"server":"https://artifact.example\\some"}' '{"server":"https://artifact.example some"}'; do
   jq --argjson bad "$bad" '. + $bad' <<<"$saved" > "$config_dir/artifact-server.json"
   status=0; output="$(check_session clean)" || status=$?
   [[ "$status" -eq 2 && "$output" == *origin* ]] || fail "server $bad exited $status: $output"

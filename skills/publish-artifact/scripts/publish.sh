@@ -45,7 +45,7 @@ fi
 [[ -f "$config" && -r "$config" ]] || fail configuration 'artifact-server.json is not a readable regular file' 3
 
 command -v jq >/dev/null 2>&1 || fail dependency 'jq is required' 4
-server="$(jq -er '.server | select(type == "string" and test("^https?://[^/?#]+/?$"))' "$config" 2>/dev/null)" \
+server="$(jq -er '.server | select(type == "string" and test("^https?://[^/?#\\\\\\s]+/?$"))' "$config" 2>/dev/null)" \
   || fail configuration 'artifact-server.json needs a "server" origin such as https://host' 3
 token_file="$(jq -er '.tokenFile | select(type == "string" and startswith("/"))' "$config" 2>/dev/null)" \
   || fail configuration 'artifact-server.json needs a "tokenFile" absolute path' 3
