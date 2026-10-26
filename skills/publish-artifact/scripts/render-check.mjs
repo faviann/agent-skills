@@ -89,6 +89,7 @@ function isConfiguredServer(server, host) {
 function sessionTokenFile(options, server, host) {
   if (options["token-file"] !== undefined) return options["token-file"];
   if (options.server === undefined || isConfiguredServer(server, host)) return host.tokenFile;
+  if (host.server === undefined) usage("an artifact id with --server needs --token-file when no server is configured");
   usage(`${server} is not the configured server, and the configured key goes only to that server; pass --token-file`);
 }
 

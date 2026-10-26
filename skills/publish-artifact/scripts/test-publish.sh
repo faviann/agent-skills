@@ -267,4 +267,10 @@ check_echo --server "$echo_server/" >/dev/null || true
 [[ "$(<"$echo_log")" == 'Bearer as_key_fixture' ]] || fail "configured key not sent to the configured server: $(<"$echo_log")"
 printf '%s\n' "$saved" > "$config_dir/artifact-server.json"
 
+scenario 'render-check.mjs with nothing configured says an artifact id needs --token-file with --server'
+status=0
+output="$(HOME="$FIXTURE_ROOT/empty" XDG_CONFIG_HOME="$FIXTURE_ROOT/empty/config" FAKE_PW=clean PATH="$fake_pw/.bin:$bare_path" \
+  node "$SCRIPTS/render-check.mjs" art_00000000-0000-0000-0000-000000000000 --server "$echo_server" 2>&1)" || status=$?
+[[ "$status" -eq 2 && "$output" == *'needs --token-file'* && "$output" != *'configured server'* ]] || fail "no-configuration --server exited $status: $output"
+
 printf 'ok\n'
