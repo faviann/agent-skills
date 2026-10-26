@@ -9,7 +9,7 @@
 }
 ```
 
-`server` is the artifact-server origin, an `http://` or `https://` URL with no path. `tokenFile` is the absolute path of a file holding one API key. Both scripts read the file on every run, so replacing the key needs no other change. Unknown fields are ignored.
+`server` is the artifact-server origin, an `http://` or `https://` URL with no path, whose host uses only ASCII letters, digits, dots, and hyphens, with an optional port. Both scripts accept the same values. `tokenFile` is the absolute path of a file holding one API key. Both scripts read the file on every run, so replacing the key needs no other change. Unknown fields are ignored.
 
 The key needs the scopes `artifact:create`, `artifact:publish:any`, `artifact:read`, `content-session:issue`, `comment:write`, and `artifact:manage:any`. The last two let it reply to comments and change visibility. The `:any` scopes reach every artifact on the server, including deletion.
 

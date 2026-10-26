@@ -87,11 +87,20 @@ mv "$home/token.away" "$home/token"
 
 scenario 'a configuration without a usable server origin is a configuration error'
 saved="$(<"$config_dir/artifact-server.json")"
-for server in null '"ftp://x"' '"https://x/api"' '"https://x\\api"' '"https://x api"' '"https://x\tapi"'; do
+for server in null '"ftp://x"' '"https://x/api"' '"https://x\\api"' '"https://x api"' '"https://x\tapi"' \
+  '"https://x\n"' '"https://x\ufeffapi"' '"https://x\u0000"' '"https://u:p@x"' '"https://caf\u00e9.example"' '"https://x:123456"' '"HTTPS://x"'; do
   jq --argjson server "$server" '.server = $server' <<<"$saved" > "$config_dir/artifact-server.json"
   assert_error configuration 3 publish "$site"
   [[ "$(publish "$site" | jq -r .message)" == *server* ]] || fail "server $server not rejected as a server"
 done
+
+scenario 'a server origin with a host, an optional port, and an optional slash is passed to the CLI as written'
+for server in 'http://127.0.0.1:8080' 'https://artifact-server.example.com' 'https://x.example:443/'; do
+  jq --arg server "$server" '.server = $server' <<<"$saved" > "$config_dir/artifact-server.json"
+  : > "$calls"; publish "$site" >/dev/null
+  [[ "$(<"$calls")" == "publish --server $server --token-file $home/token -- $site" ]] || fail "server $server not passed: $(<"$calls")"
+done
+printf '%s\n' "$saved" > "$config_dir/artifact-server.json"
 
 scenario 'a configuration without a usable tokenFile is a configuration error'
 for bad in '{"server":"https://x"}' '{"server":"https://x","tokenFile":"relative"}' 'not json'; do
@@ -214,7 +223,8 @@ printf '%s\n' "$saved" > "$config_dir/artifact-server.json"
 
 scenario 'render-check.mjs sends the key only to a server origin'
 : > "$fetch_log"
-for bad in '{"server":"https://artifact.example/some/path?x="}' '{"server":"ftp://artifact.example"}' '{"server":"https://artifact.example\\some"}' '{"server":"https://artifact.example some"}'; do
+for bad in '{"server":"https://artifact.example\n"}' '{"server":"https://artifact.example\ufeffapi"}' '{"server":"https://u:p@artifact.example"}' '{"server":"https://caf\u00e9.example"}' \
+  '{"server":"https://artifact.example/some/path?x="}' '{"server":"ftp://artifact.example"}' '{"server":"https://artifact.example\\some"}' '{"server":"https://artifact.example some"}'; do
   jq --argjson bad "$bad" '. + $bad' <<<"$saved" > "$config_dir/artifact-server.json"
   status=0; output="$(check_session clean)" || status=$?
   [[ "$status" -eq 2 && "$output" == *origin* ]] || fail "server $bad exited $status: $output"

@@ -5,7 +5,7 @@ import {pathToFileURL} from "node:url";
 import {parseArgs} from "node:util";
 
 const ARTIFACT_ID = /^art_[0-9a-f-]{36}$/u;
-const ORIGIN = /^https?:\/\/[^/?#\\\s]+\/?$/u;
+const ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?\/?$/u;
 
 function usage(message) {
   console.error(`render-check: ${message}`);
