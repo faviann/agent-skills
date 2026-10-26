@@ -72,11 +72,26 @@ function readToken(file) {
   }
 }
 
-function resolveTarget(target, server, token) {
+function isConfiguredServer(server, host) {
+  return typeof host.server === "string" && ORIGIN.test(host.server) &&
+    new URL(server).origin === new URL(host.server).origin;
+}
+
+function sessionTokenFile(options, server, host) {
+  if (options["token-file"] !== undefined) return options["token-file"];
+  if (options.server === undefined || isConfiguredServer(server, host)) return host.tokenFile;
+  usage(`${server} is not the configured server, and the configured key goes only to that server; pass --token-file`);
+}
+
+function resolveTarget(target, options, host) {
   if (ARTIFACT_ID.test(target)) {
-    if (token === null || !server) usage("an artifact id needs a server and token file from --server and --token-file, or from the host configuration");
+    const server = options.server ?? host.server;
+    const missing = "an artifact id needs a server and token file from --server and --token-file, or from the host configuration";
+    if (!server) usage(missing);
     if (!ORIGIN.test(server)) usage("the server must be an origin such as https://host");
-    return {kind: "session", server: server.replace(/\/$/u, ""), artifactId: target};
+    const tokenFile = sessionTokenFile(options, server, host);
+    if (tokenFile === undefined) usage(missing);
+    return {kind: "session", server: server.replace(/\/$/u, ""), artifactId: target, token: readToken(tokenFile)};
   }
   try {
     return {kind: "url", url: new URL(target).href};
@@ -85,7 +100,7 @@ function resolveTarget(target, server, token) {
   }
 }
 
-async function bootstrapUrl({server, artifactId}, token) {
+async function bootstrapUrl({server, artifactId, token}) {
   const response = await fetch(
     `${server}/api/v1/artifacts/${encodeURIComponent(artifactId)}/content-sessions`,
     {method: "POST", headers: {authorization: `Bearer ${token}`}},
@@ -106,11 +121,7 @@ const {values, positionals} = parseArgs({
 });
 if (positionals.length !== 1) usage("expected exactly one artifact id or URL");
 
-const host = hostConfiguration();
-const tokenFile = values["token-file"] ?? host.tokenFile;
-const token = tokenFile !== undefined && ARTIFACT_ID.test(positionals[0]) ? readToken(tokenFile) : null;
-const server = values.server ?? host.server ?? "";
-const target = resolveTarget(positionals[0], server, token);
+const target = resolveTarget(positionals[0], values, hostConfiguration());
 const screenshot = path.resolve(
   values.out ?? path.join(mkdtempSync(path.join(tmpdir(), "artifact-render-")), "render.png"),
 );
@@ -126,7 +137,7 @@ try {
   if (target.kind === "session") {
     // The exchange sets the content-session cookie in the context's jar, so the
     // page then loads the artifact itself instead of the bootstrap redirect page.
-    const bootstrap = new URL(await bootstrapUrl(target, token));
+    const bootstrap = new URL(await bootstrapUrl(target));
     const exchange = await context.request.get(bootstrap.href);
     if (!exchange.ok()) throw new Error(`content session exchange: HTTP ${exchange.status()}`);
     bootstrap.searchParams.delete("__artifact_bootstrap");

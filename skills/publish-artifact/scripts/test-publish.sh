@@ -212,4 +212,37 @@ status=0; output="$(check_session clean --server 'http://127.0.0.1:1/x')" || sta
 [[ "$status" -eq 2 && "$output" == *origin* ]] || fail "--server with a path exited $status: $output"
 [[ ! -s "$fetch_log" ]] || fail "the key was sent to a non-origin server: $(<"$fetch_log")"
 
+scenario 'render-check.mjs sends the configured key only to the configured server'
+cat > "$FIXTURE_ROOT/echo-server.mjs" <<'SERVER'
+import {createServer} from "node:http";
+import {appendFileSync, writeFileSync} from "node:fs";
+const [log, portFile] = process.argv.slice(2);
+const server = createServer((request, response) => {
+  appendFileSync(log, `${request.headers.authorization ?? "no authorization"}\n`);
+  response.writeHead(500).end();
+});
+server.listen(0, "127.0.0.1", () => writeFileSync(portFile, String(server.address().port)));
+SERVER
+echo_log="$FIXTURE_ROOT/echo.log"; : > "$echo_log"
+node "$FIXTURE_ROOT/echo-server.mjs" "$echo_log" "$FIXTURE_ROOT/echo.port" &
+echo_pid=$!
+trap 'kill "$echo_pid" 2>/dev/null; rm -rf "$FIXTURE_ROOT"' EXIT
+for _ in {1..50}; do [[ -s "$FIXTURE_ROOT/echo.port" ]] && break; sleep 0.1; done
+echo_server="http://127.0.0.1:$(<"$FIXTURE_ROOT/echo.port")"
+check_echo() {
+  FAKE_PW=clean HOME="$home" XDG_CONFIG_HOME="$home/config" PATH="$fake_pw/.bin:$bare_path" \
+    node "$SCRIPTS/render-check.mjs" art_00000000-0000-0000-0000-000000000000 --out "$FIXTURE_ROOT/out.png" "$@" 2>&1
+}
+status=0; output="$(check_echo --server "$echo_server")" || status=$?
+[[ "$status" -eq 2 && "$output" == *--token-file* ]] || fail "another server without --token-file exited $status: $output"
+[[ ! -s "$echo_log" ]] || fail "the configured key reached another server: $(<"$echo_log")"
+printf 'as_key_other\n' > "$FIXTURE_ROOT/other-token"
+check_echo --server "$echo_server" --token-file "$FIXTURE_ROOT/other-token" >/dev/null || true
+[[ "$(<"$echo_log")" == 'Bearer as_key_other' ]] || fail "--token-file key not sent to --server: $(<"$echo_log")"
+: > "$echo_log"
+jq --arg server "$echo_server" '.server = $server' <<<"$saved" > "$config_dir/artifact-server.json"
+check_echo --server "$echo_server/" >/dev/null || true
+[[ "$(<"$echo_log")" == 'Bearer as_key_fixture' ]] || fail "configured key not sent to the configured server: $(<"$echo_log")"
+printf '%s\n' "$saved" > "$config_dir/artifact-server.json"
+
 printf 'ok\n'
