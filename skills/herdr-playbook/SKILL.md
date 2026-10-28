@@ -38,7 +38,6 @@ A pane is watchable live, scrollable, takes the user's keystrokes, and outlives 
 - a terminal app or CLI output: run it in a pane, driven to the state in question with keys that only navigate;
 - data a picture explains faster (timings, sizes, trends, the herd), a tree (inheritance, package layout), or a choice between layouts: the canvas;
 - relationships: a small graph as a text diagram in chat; a larger or tangled one, or a chart or page that needs a browser, through the `dataviz` and `publish-artifact` skills, then send the review link;
-- a code change: a review pane (below);
 - a few lines of text: chat.
 
 **Canvas.** One pane, labeled `canvas`, where you draw with Python (`rich`, `plotext`, `textual`) and redraw in place. Use it unprompted when it fits, and say what it shows. It only reads, and shows no secrets: Collie mirrors every pane to the phone. Before your first canvas in a session, read [recipes](references/recipes.md#canvas) for the pinned packages, the rules, and `scripts/canvas-ask.py`, which asks the user to pick between previews.
@@ -83,8 +82,6 @@ Always pass `--workspace`. Without it, the tab lands in whatever workspace the u
   - `herdr pane close <id>` closes it; closing a tab's last pane closes the tab.
 - **Zoom a pane** for a phone-sized screen with `herdr pane zoom <id> --on|--off`. Zoom also focuses the pane, so offer it rather than doing it.
 - **Take the user there** only when they ask: `herdr agent focus <name>` *(help)*, `herdr tab focus <id>`, `herdr workspace focus <id>`.
-
-**Ask for the user's review.** The `annotator` MCP tools (File Annotator plugin) open a diff review pane the user annotates from the desktop or phone. Open one when you finish a change worth a human look, or when the user wants to review first; skip trivial edits. Prefer `show_changes`, then `collect_review` when the server nudges your pane, so you keep working; `review_changes` blocks and returns `cancelled` after 30 minutes. On the verdict, apply the `fix` annotations, answer the `question` ones, and say which you did. When the user decides elsewhere (approves in chat, merges) or the reviewed tree is merged or removed, close the review pane yourself and say so: find the pane whose `agent` is `annotator` in `herdr pane list`, run `herdr plugin pane close <pane_id>`, then `collect_review` to clear the cancelled review. If the tools are missing, check `claude mcp get annotator`; MCP servers load at session start.
 
 ## Run and delegate work in parallel
 
@@ -147,7 +144,7 @@ herdr agent read scan-payments --source recent-unwrapped --lines 150
 
 ## Plugins, machines, and the socket API
 
-- **Plugins.** Collie (`herdr.collie`) is the user's phone view; File Annotator (`jonasbaeumer.file-annotator`) is driven through its `annotator` MCP tools, not its pane. Invoke read-only plugin actions (status, url, version, list) freely; actions that change or restart something, modal popups, and install, enable, or link are ask-first. Before any other plugin action or pane, read [plugins](references/plugins.md).
+- **Plugins.** Collie (`herdr.collie`) is the user's phone view. Invoke read-only plugin actions (status, url, version, list) freely; actions that change or restart something, modal popups, and install, enable, or link are ask-first. Before any other plugin action or pane, read [plugins](references/plugins.md).
 - **Another machine, an isolated experiment, or a socket method the CLI lacks** (`herdr --machine <label>`, a named session never `default`, `events.subscribe`, `layout.apply`): read [recipes](references/recipes.md).
 
 ## Guide the user
