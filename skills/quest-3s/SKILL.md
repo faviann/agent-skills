@@ -1,6 +1,6 @@
 ---
 name: quest-3s
-description: Connect adb to the user's Meta Quest 3S headset over Tailscale and handle its quirks. Use for any task on the Quest or VR apps on it: sideloading an APK, logcat, a screenshot of what it shows, or inspecting its apps and state.
+description: "Connect adb to the user's Meta Quest 3S headset over Tailscale and handle its quirks. Use for any task on the Quest or VR apps on it: sideloading an APK, logcat, a screenshot of what it shows, or inspecting its apps and state."
 ---
 
 # Quest 3S
