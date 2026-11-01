@@ -1,6 +1,6 @@
 ---
 name: tailscale-policy
-description: "Change the user's work tailnet policy file (ACLs, grants, groups, tag owners, SSH rules, tests) through the Tailscale API, with review before every push. Use when the user asks to edit, check, or deploy Tailscale access rules."
+description: "Tailscale policy file of the user's work tailnet (ACLs, grants, groups, tag owners, SSH rules) through the API, with the user's review before every push. Use to read or change who can reach what on the tailnet."
 ---
 
 # Tailscale policy
