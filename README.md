@@ -24,10 +24,16 @@ this repository as a submodule source.
   3S over Tailscale, including from hosts whose tailscaled runs in userspace
   networking mode, and records the headset's quirks. `scripts/quest-connect.sh`
   diagnoses each failure and names the fix a person must make.
+- [`tailscale-policy`](skills/tailscale-policy/SKILL.md) — edits the work
+  tailnet's policy file through the Tailscale API. `scripts/tspolicy.py` pulls
+  the live policy, validates edits and runs their tests, and pushes only when
+  the live policy is unchanged since the pull, so a push never overwrites an
+  edit made elsewhere.
 
 ## Tests
 
 ```bash
 bash skills/publish-artifact/scripts/test-publish.sh
 bash skills/herdr-playbook/scripts/test-herdr-playbook.sh
+python3 skills/tailscale-policy/scripts/test_tspolicy.py
 ```
