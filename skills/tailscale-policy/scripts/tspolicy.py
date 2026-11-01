@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Pull, check, and push a Tailscale tailnet policy file without overwriting concurrent edits."""
 import difflib
+import hashlib
+import http.client
 import json
 import os
 import pathlib
+import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -12,10 +16,10 @@ import urllib.request
 API = os.environ.get("TSPOLICY_API", "https://api.tailscale.com/api/v2").rstrip("/")
 CREDENTIALS = pathlib.Path(os.environ.get("TSPOLICY_CREDENTIALS", "~/.agents/tailscale-policy/oauth")).expanduser()
 STATE = pathlib.Path(os.environ.get("TSPOLICY_DIR", "~/.cache/tailscale-policy")).expanduser()
-BASE, ETAG, POLICY, LIVE = (STATE / n for n in ("base.hujson", "base.etag", "policy.hujson", "live.hujson"))
+BASE, ETAG, POLICY, CHECKED = (STATE / n for n in ("base.hujson", "base.etag", "policy.hujson", "checked"))
 ACL = f"{API}/tailnet/-/acl"
 
-EXIT_INVALID, EXIT_SETUP, EXIT_LIVE_CHANGED, EXIT_UNPUSHED = 1, 2, 3, 4
+EXIT_INVALID, EXIT_SETUP, EXIT_LIVE_CHANGED, EXIT_UNPUSHED, EXIT_UNCHECKED = 1, 2, 3, 4, 5
 
 
 def die(code, message):
@@ -40,8 +44,8 @@ def request(method, url, body=None, headers=None):
             return resp.status, resp.headers, resp.read().decode()
     except urllib.error.HTTPError as err:
         return err.code, err.headers, err.read().decode()
-    except urllib.error.URLError as err:
-        die(EXIT_SETUP, f"{method} {url} failed: {err.reason}")
+    except (OSError, http.client.HTTPException) as err:
+        die(EXIT_SETUP, f"{method} {url} failed: {err!r}. If this was a push, it may have landed: run check.")
 
 
 def auth_headers():
@@ -53,17 +57,19 @@ def auth_headers():
     return {"Authorization": f"Bearer {json.loads(body)['access_token']}"}
 
 
-def fetch_live(auth):
+def get_live(auth):
     status, headers, body = request("GET", ACL, headers={**auth, "Accept": "application/hujson"})
-    if status != 200 or not headers.get("ETag"):
-        die(EXIT_SETUP, f"GET policy returned {status}: {body}")
-    return body, headers["ETag"]
+    return (body, headers["ETag"]) if status == 200 and headers.get("ETag") else None
+
+
+def fetch_live(auth):
+    return get_live(auth) or die(EXIT_SETUP, "GET policy failed")
 
 
 def validate(auth, text):
     status, _, body = request("POST", f"{ACL}/validate", text.encode(), {**auth, "Content-Type": "application/hujson"})
     if status != 200:
-        return f"validate returned {status}: {body}"
+        die(EXIT_SETUP, f"validate returned {status}: {body}")
     result = json.loads(body) if body.strip() else {}
     return json.dumps(result, indent=2) if result.get("message") else None
 
@@ -72,47 +78,68 @@ def diff(old, new, old_name, new_name):
     return "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), old_name, new_name))
 
 
+def fingerprint(policy, etag):
+    return hashlib.sha256(f"{etag}\n{policy}".encode()).hexdigest()
+
+
 def require_pulled():
     if not (BASE.is_file() and ETAG.is_file() and POLICY.is_file()):
         die(EXIT_SETUP, "Nothing pulled yet. Run: tspolicy.py pull")
     return BASE.read_text(), ETAG.read_text().strip(), POLICY.read_text()
 
 
-def save_base(text, etag):
-    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
-    BASE.write_text(text)
-    ETAG.write_text(etag)
-    POLICY.write_text(text)
-    LIVE.unlink(missing_ok=True)
+def save_state(base, etag, policy):
+    STATE.mkdir(parents=True, exist_ok=True)
+    STATE.chmod(0o700)
+    for path, text in ((BASE, base), (ETAG, etag), (POLICY, policy)):
+        path.write_text(text)
+        path.chmod(0o600)
+    CHECKED.unlink(missing_ok=True)
+
+
+def rebase_onto_live(base, policy, live, live_etag):
+    """Merge the live policy's changes into the working copy, so they can't be dropped by the next push."""
+    if live == policy:
+        save_state(live, live_etag, live)
+        print("The live policy already matches policy.hujson: an earlier push landed.")
+        sys.exit(0)
+    with tempfile.TemporaryDirectory() as tmp:
+        mine, old, theirs = (pathlib.Path(tmp, n) for n in ("mine", "old", "theirs"))
+        mine.write_text(policy)
+        old.write_text(base)
+        theirs.write_text(live)
+        merge = subprocess.run(["git", "merge-file", "-p", "-L", "your edit", "-L", "pulled", "-L", "live", mine, old, theirs], capture_output=True, text=True)
+    if merge.returncode < 0 or not merge.stdout:
+        die(EXIT_SETUP, f"git merge-file failed: {merge.stderr}")
+    save_state(live, live_etag, merge.stdout)
+    print("The live policy changed since the pull. Someone else's changes:")
+    print(diff(base, live, "pulled", "live"))
+    conflicts = f" with {merge.returncode} conflict(s) to resolve (marked <<<<<<<)" if merge.returncode else ""
+    die(EXIT_LIVE_CHANGED, f"Merged those changes into {POLICY}{conflicts}. Run check and get the user's approval again.")
 
 
 def pull(force):
+    if POLICY.is_file() and BASE.is_file() and POLICY.read_text() != BASE.read_text() and not force:
+        die(EXIT_UNPUSHED, f"{POLICY} has unpushed edits. Push them, or pass --force to set them aside.")
+    live, etag = fetch_live(auth_headers())
     if POLICY.is_file() and BASE.is_file() and POLICY.read_text() != BASE.read_text():
-        if not force:
-            die(EXIT_UNPUSHED, f"{POLICY} has unpushed edits. Push them, or pass --force to set them aside.")
         POLICY.replace(STATE / "policy.hujson.orig")
         print(f"Set aside unpushed edits in {STATE / 'policy.hujson.orig'}")
-    save_base(*fetch_live(auth_headers()))
+    save_state(live, etag, live)
     print(f"Pulled the live policy. Edit {POLICY}")
-
-
-def report_live_change(base, live):
-    LIVE.write_text(live)
-    print(f"The live policy changed since the pull. Its changes, saved to {LIVE}:")
-    print(diff(base, live, "base.hujson", "live.hujson"))
-    die(EXIT_LIVE_CHANGED, "Show these changes to the user, then run pull --force and reapply the edit.")
 
 
 def check():
     base, etag, policy = require_pulled()
     auth = auth_headers()
-    print(diff(base, policy, "base.hujson", "policy.hujson") or "No edits: policy.hujson matches the pulled policy.")
     live, live_etag = fetch_live(auth)
     if live_etag != etag:
-        report_live_change(base, live)
+        rebase_onto_live(base, policy, live, live_etag)
+    print(diff(base, policy, "live", "policy.hujson") or "No edits: policy.hujson matches the live policy.")
     problem = validate(auth, policy)
     if problem:
         die(EXIT_INVALID, f"Validation or tests failed:\n{problem}")
+    CHECKED.write_text(fingerprint(policy, etag))
     print("Valid, tests pass, and the live policy is unchanged since the pull.")
 
 
@@ -121,20 +148,27 @@ def push():
     if policy == base:
         print("No edits to push.")
         return
+    if not CHECKED.is_file() or CHECKED.read_text() != fingerprint(policy, etag):
+        die(EXIT_UNCHECKED, "policy.hujson differs from what check last validated. Run check and get the user's approval of its diff.")
     auth = auth_headers()
-    problem = validate(auth, policy)
-    if problem:
-        die(EXIT_INVALID, f"Validation or tests failed:\n{problem}")
     status, _, body = request("POST", ACL, policy.encode(), {**auth, "Content-Type": "application/hujson", "Accept": "application/hujson", "If-Match": etag})
     if status == 412:
-        report_live_change(base, fetch_live(auth)[0])
+        rebase_onto_live(base, policy, *fetch_live(auth))
+    if status == 400:
+        die(EXIT_INVALID, f"Tailscale rejected the policy: {body}")
     if status != 200:
-        die(EXIT_INVALID, f"POST policy returned {status}: {body}")
-    save_base(*fetch_live(auth))
-    print("Pushed. The live policy now matches policy.hujson.")
+        die(EXIT_SETUP, f"POST policy returned {status}: {body}")
+    refreshed = get_live(auth)
+    if refreshed:
+        save_state(refreshed[0], refreshed[1], refreshed[0])
+        print("Pushed. The live policy now matches policy.hujson.")
+    else:
+        ETAG.unlink()
+        print("Pushed, but refreshing the local copy failed. Run pull before the next edit.")
 
 
 def main(argv):
+    os.umask(0o077)
     commands = {"pull": lambda: pull("--force" in argv[1:]), "check": check, "push": push}
     if not argv or argv[0] not in commands:
         die(EXIT_SETUP, "usage: tspolicy.py pull [--force] | check | push")
