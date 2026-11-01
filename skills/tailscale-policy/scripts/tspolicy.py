@@ -68,6 +68,8 @@ def fetch_live(auth):
 
 def validate(auth, text):
     status, _, body = request("POST", f"{ACL}/validate", text.encode(), {**auth, "Content-Type": "application/hujson"})
+    if status == 400:
+        return body
     if status != 200:
         die(EXIT_SETUP, f"validate returned {status}: {body}")
     result = json.loads(body) if body.strip() else {}
@@ -163,8 +165,7 @@ def push():
         save_state(refreshed[0], refreshed[1], refreshed[0])
         print("Pushed. The live policy now matches policy.hujson.")
     else:
-        ETAG.unlink()
-        print("Pushed, but refreshing the local copy failed. Run pull before the next edit.")
+        print("Pushed, but refreshing the local copy failed. Run check before the next edit.")
 
 
 def main(argv):

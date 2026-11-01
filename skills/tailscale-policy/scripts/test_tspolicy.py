@@ -180,6 +180,27 @@ class TsPolicyTest(unittest.TestCase):
         FakeTailscale.validate_status = 403
         self.assertEqual(self.run_cli("check").returncode, 2)
 
+    def test_a_validate_400_is_an_invalid_policy(self):
+        self.run_cli("pull")
+        self.edit('"acls": []', '"acls": ["new"]')
+        FakeTailscale.validate_status = 400
+        self.assertEqual(self.run_cli("check").returncode, 1)
+
+    def test_a_failed_refresh_after_push_recovers_on_the_next_check(self):
+        self.run_cli("pull")
+        self.edit('"acls": []', '"acls": ["mine"]')
+        self.run_cli("check")
+        original_get = FakeTailscale.do_GET
+        FakeTailscale.do_GET = lambda handler: handler.reply(500, "{}")
+        try:
+            self.assertEqual(self.run_cli("push").returncode, 0)
+        finally:
+            FakeTailscale.do_GET = original_get
+        checked = self.run_cli("check")
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertIn("earlier push landed", checked.stdout)
+        self.assertEqual(self.run_cli("pull").returncode, 0)
+
     def test_pull_keeps_unpushed_edits_unless_forced(self):
         self.run_cli("pull")
         self.edit("owner note", "draft")
