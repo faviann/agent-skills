@@ -11,7 +11,7 @@ import threading
 import unittest
 
 SCRIPT = pathlib.Path(__file__).with_name("tspolicy.py")
-INITIAL = '{\n  // owner note\n  "acls": [],\n  "groups": {},\n}\n'
+INITIAL = '{\n  // owner note\n  "acls": [],\n  "ssh": [],\n  "groups": {},\n}\n'
 SECRET = "tskey-client-secret"
 
 
@@ -19,6 +19,7 @@ class FakeTailscale(http.server.BaseHTTPRequestHandler):
     policy = INITIAL
     writes = 0
     validate_status = 200
+    validate_body = None
 
     def log_message(self, *_):
         pass
@@ -55,8 +56,9 @@ class FakeTailscale(http.server.BaseHTTPRequestHandler):
             return
         failing = "FAILING-TEST" in body
         if self.path == "/api/v2/tailnet/-/acl/validate":
-            if FakeTailscale.validate_status != 200:
-                return self.reply(FakeTailscale.validate_status, '{"message":"forbidden"}')
+            if FakeTailscale.validate_status != 200 or FakeTailscale.validate_body is not None:
+                body = '{"message":"forbidden"}' if FakeTailscale.validate_body is None else FakeTailscale.validate_body
+                return self.reply(FakeTailscale.validate_status, body)
             return self.reply(200, '{"message":"test(s) failed","data":[]}' if failing else "")
         if self.path == "/api/v2/tailnet/-/acl":
             if self.headers.get("If-Match") not in (None, self.etag()):
@@ -79,22 +81,23 @@ class TsPolicyTest(unittest.TestCase):
         cls.server.shutdown()
 
     def setUp(self):
-        FakeTailscale.policy, FakeTailscale.writes, FakeTailscale.validate_status = INITIAL, 0, 200
+        FakeTailscale.policy, FakeTailscale.writes, FakeTailscale.validate_status, FakeTailscale.validate_body = INITIAL, 0, 200, None
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.state = self.tmp / "state"
         self.creds = self.tmp / "oauth"
         self.creds.write_text(f"TS_OAUTH_CLIENT_ID=id-1\nTS_OAUTH_CLIENT_SECRET={SECRET}\n")
+        self.creds.chmod(0o600)
         self.policy = self.state / "policy.hujson"
 
-    def run_cli(self, *args):
+    def run_cli(self, *args, **env_overrides):
         env = {**os.environ, "TSPOLICY_API": f"http://127.0.0.1:{self.server.server_port}/api/v2",
-               "TSPOLICY_DIR": str(self.state), "TSPOLICY_CREDENTIALS": str(self.creds)}
-        result = subprocess.run([sys.executable, str(SCRIPT), *args], env=env, capture_output=True, text=True, timeout=20)
+               "TSPOLICY_DIR": str(self.state), "TSPOLICY_CREDENTIALS": str(self.creds), **env_overrides}
+        result = subprocess.run([sys.executable, str(SCRIPT), *args], env=env, capture_output=True, encoding="utf-8", timeout=20)
         self.assertNotIn(SECRET, result.stdout + result.stderr)
         return result
 
     def edit(self, old, new):
-        self.policy.write_text(self.policy.read_text().replace(old, new))
+        self.policy.write_bytes(self.policy.read_bytes().decode("utf-8").replace(old, new).encode("utf-8"))
 
     def someone_else_edits(self):
         FakeTailscale.policy = FakeTailscale.policy.replace('"groups": {}', '"groups": {"console": []}')
@@ -132,6 +135,7 @@ class TsPolicyTest(unittest.TestCase):
         self.someone_else_edits()
         pushed = self.run_cli("push")
         self.assertEqual(pushed.returncode, 3)
+        self.assertNotIn("conflict", pushed.stderr)
         self.assertIn('+  "groups": {"console": []},', pushed.stdout)
         self.assertEqual(FakeTailscale.writes, 0)
         self.assertIn('"groups": {"console": []}', self.policy.read_text())
@@ -204,17 +208,25 @@ class TsPolicyTest(unittest.TestCase):
     def test_pull_keeps_unpushed_edits_unless_forced(self):
         self.run_cli("pull")
         self.edit("owner note", "draft")
-        self.assertEqual(self.run_cli("pull").returncode, 4)
+        blocked = self.run_cli("pull")
+        self.assertEqual(blocked.returncode, 4)
+        self.assertIn("Run check", blocked.stderr)
         self.assertIn("draft", self.policy.read_text())
         self.assertEqual(self.run_cli("pull", "--force").returncode, 0)
         self.assertEqual(self.policy.read_text(), INITIAL)
         self.assertIn("draft", (self.state / "policy.hujson.orig").read_text())
+        self.edit("owner note", "second draft")
+        self.assertEqual(self.run_cli("pull", "--force").returncode, 0)
+        self.assertNotIn("second draft", (self.state / "policy.hujson.orig").read_text())
+        self.assertIn("second draft", (self.state / "policy.hujson.orig2").read_text())
 
+    @unittest.skipIf(os.name == "nt", "Windows has no Unix file modes")
     def test_state_is_private_to_the_user(self):
         self.state.mkdir(mode=0o755)
-        (self.state / "policy.hujson").write_text(INITIAL)
-        (self.state / "policy.hujson").chmod(0o644)
-        self.run_cli("pull")
+        for name in ("base.hujson", "policy.hujson"):
+            (self.state / name).write_text(INITIAL)
+            (self.state / name).chmod(0o644)
+        self.assertEqual(self.run_cli("pull").returncode, 0)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
         self.assertEqual(self.policy.stat().st_mode & 0o777, 0o600)
 
@@ -222,7 +234,147 @@ class TsPolicyTest(unittest.TestCase):
         self.creds.unlink()
         result = self.run_cli("pull")
         self.assertEqual(result.returncode, 2)
-        self.assertIn("dotfiles/tailscale-policy-oauth", result.stderr)
+        self.assertIn(str(self.creds), result.stderr)
+        self.assertIn("policy_file", result.stderr)
+
+    def test_a_credential_saved_with_a_bom_and_crlf_works(self):
+        self.creds.write_bytes(f"\ufeffTS_OAUTH_CLIENT_ID=id-1\r\nTS_OAUTH_CLIENT_SECRET={SECRET}\r\n".encode())
+        pulled = self.run_cli("pull")
+        self.assertEqual(pulled.returncode, 0, pulled.stderr)
+
+    def test_non_ascii_text_survives_pull_check_and_push(self):
+        FakeTailscale.policy = INITIAL.replace("owner note", "note de l'\u00e9quipe \u2192 ops")
+        self.run_cli("pull")
+        self.edit('"acls": []', '"acls": ["caf\u00e9"]')
+        checked = self.run_cli("check")
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertIn('"caf\u00e9"', checked.stdout)
+        self.assertEqual(self.run_cli("push").returncode, 0)
+        self.assertIn("note de l'\u00e9quipe \u2192 ops", FakeTailscale.policy)
+        self.assertIn('"caf\u00e9"', FakeTailscale.policy)
+
+    def test_an_unexpected_reply_is_a_setup_error_not_an_invalid_policy(self):
+        self.run_cli("pull")
+        self.edit('"acls": []', '"acls": ["new"]')
+        FakeTailscale.validate_body = "<html>proxy login</html>"
+        checked = self.run_cli("check")
+        self.assertEqual(checked.returncode, 2, checked.stderr)
+        self.assertIn("Unexpected error", checked.stderr)
+
+    def test_a_merge_without_git_is_a_setup_error(self):
+        self.run_cli("pull")
+        self.edit('"acls": []', '"acls": ["mine"]')
+        self.someone_else_edits()
+        empty = self.tmp / "no-git"
+        empty.mkdir()
+        checked = self.run_cli("check", PATH=str(empty))
+        self.assertEqual(checked.returncode, 2, checked.stderr)
+        self.assertIn("git is not on the PATH", checked.stderr)
+        self.assertIn('"acls": ["mine"]', self.policy.read_text())
+
+    def test_a_failed_read_names_its_status(self):
+        original_get = FakeTailscale.do_GET
+        FakeTailscale.do_GET = lambda handler: handler.reply(403, '{"message":"missing scope"}')
+        try:
+            pulled = self.run_cli("pull")
+        finally:
+            FakeTailscale.do_GET = original_get
+        self.assertEqual(pulled.returncode, 2)
+        self.assertIn("403", pulled.stderr)
+        self.assertIn("missing scope", pulled.stderr)
+
+    def test_a_crlf_policy_merges_line_by_line_and_keeps_its_endings(self):
+        FakeTailscale.policy = INITIAL.replace("\n", "\r\n")
+        self.run_cli("pull")
+        self.edit('"acls": []', '"acls": ["mine"]')
+        self.someone_else_edits()
+        checked = self.run_cli("check")
+        self.assertEqual(checked.returncode, 3, checked.stderr)
+        self.assertNotIn("conflict", checked.stderr)
+        self.assertEqual(self.run_cli("check").returncode, 0)
+        self.assertEqual(self.run_cli("push").returncode, 0)
+        self.assertIn('"acls": ["mine"],\r\n', FakeTailscale.policy)
+        self.assertIn('"groups": {"console": []},\r\n', FakeTailscale.policy)
+
+    def test_an_editor_switching_line_endings_is_no_edit(self):
+        self.run_cli("pull")
+        self.policy.write_bytes(self.policy.read_bytes().replace(b"\n", b"\r\n"))
+        self.assertEqual(self.run_cli("pull").returncode, 0)
+        self.policy.write_bytes(self.policy.read_bytes().replace(b"\n", b"\r\n"))
+        checked = self.run_cli("check")
+        self.assertIn("No edits", checked.stdout)
+        self.edit('"acls": []', '"acls": ["mine"]')
+        self.run_cli("check")
+        self.assertEqual(self.run_cli("push").returncode, 0)
+        self.assertNotIn("\r", FakeTailscale.policy)
+
+    def test_edits_without_a_pulled_copy_are_kept(self):
+        self.run_cli("pull")
+        self.edit('"acls": []', '"acls": ["mine"]')
+        (self.state / "base.hujson").unlink()
+        checked = self.run_cli("check")
+        self.assertEqual(checked.returncode, 2)
+        self.assertIn("incomplete", checked.stderr)
+        self.assertNotIn("Run: tspolicy.py pull", checked.stderr)
+        self.assertEqual(self.run_cli("pull").returncode, 4)
+        self.assertIn('"acls": ["mine"]', self.policy.read_text())
+
+    def test_quoted_credential_values_work(self):
+        self.creds.write_text(f"TS_OAUTH_CLIENT_ID='id-1'\nTS_OAUTH_CLIENT_SECRET=\"{SECRET}\"\n")
+        pulled = self.run_cli("pull")
+        self.assertEqual(pulled.returncode, 0, pulled.stderr)
+
+    @unittest.skipIf(os.name == "nt", "Windows has no Unix file modes")
+    def test_a_credential_others_can_read_gets_a_warning(self):
+        self.creds.chmod(0o644)
+        pulled = self.run_cli("pull")
+        self.assertEqual(pulled.returncode, 0, pulled.stderr)
+        self.assertIn("chmod 600", pulled.stderr)
+
+    def test_the_secret_goes_only_to_https_or_this_machine(self):
+        refused = self.run_cli("pull", TSPOLICY_API="http://example.invalid/api/v2")
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("must be https", refused.stderr)
+
+    def test_an_empty_validate_400_is_an_invalid_policy(self):
+        self.run_cli("pull")
+        self.edit('"acls": []', '"acls": ["new"]')
+        FakeTailscale.validate_status, FakeTailscale.validate_body = 400, ""
+        checked = self.run_cli("check")
+        self.assertEqual(checked.returncode, 1)
+        self.assertNotIn("tests pass", checked.stdout)
+        self.assertEqual(self.run_cli("push").returncode, 5)
+
+    def test_the_token_never_follows_a_redirect(self):
+        followed = []
+        original_get = FakeTailscale.do_GET
+
+        def redirecting_get(handler):
+            if handler.path == "/elsewhere":
+                followed.append(handler.headers.get("Authorization"))
+                return handler.reply(200, INITIAL, {"ETag": '"x"'})
+            handler.reply(302, "", {"Location": "/elsewhere"})
+
+        FakeTailscale.do_GET = redirecting_get
+        try:
+            pulled = self.run_cli("pull")
+        finally:
+            FakeTailscale.do_GET = original_get
+        self.assertEqual(pulled.returncode, 2)
+        self.assertIn("302", pulled.stderr)
+        self.assertEqual(followed, [])
+
+    def test_a_save_cut_short_still_merges_the_live_change(self):
+        self.run_cli("pull")
+        self.edit('"acls": []', '"acls": ["mine"]')
+        self.someone_else_edits()
+        etag = self.state / "base.etag"
+        etag.chmod(0o444)  # readable, so check starts; not writable, so its save stops at the etag
+        self.assertEqual(self.run_cli("check").returncode, 2)
+        etag.chmod(0o600)
+        self.assertEqual(self.run_cli("check").returncode, 3)
+        self.assertIn('"groups": {"console": []}', self.policy.read_text())
+        self.assertIn('"acls": ["mine"]', self.policy.read_text())
 
     def test_push_without_edits_writes_nothing(self):
         self.run_cli("pull")

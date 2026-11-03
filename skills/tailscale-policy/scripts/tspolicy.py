@@ -22,6 +22,21 @@ ACL = f"{API}/tailnet/-/acl"
 EXIT_INVALID, EXIT_SETUP, EXIT_LIVE_CHANGED, EXIT_UNPUSHED, EXIT_UNCHECKED = 1, 2, 3, 4, 5
 
 
+def read(path):
+    with open(path, encoding="utf-8", newline="") as f:
+        return f.read()
+
+
+def write(path, text):
+    path.write_text(text, encoding="utf-8", newline="")
+
+
+def same_endings(text, like):
+    """Give text the line endings of like, so an editor that switched them makes no edit."""
+    lf = text.replace("\r\n", "\n")
+    return lf.replace("\n", "\r\n") if "\r\n" in like else lf
+
+
 def die(code, message):
     print(message, file=sys.stderr)
     sys.exit(code)
@@ -29,18 +44,35 @@ def die(code, message):
 
 def read_credentials():
     if not CREDENTIALS.is_file():
-        die(EXIT_SETUP, f"No credential at {CREDENTIALS}. Create the Bitwarden item dotfiles/tailscale-policy-oauth, then run workstation-update --refresh-secrets.")
-    values = dict(line.split("=", 1) for line in CREDENTIALS.read_text().splitlines() if "=" in line)
+        die(EXIT_SETUP, f"No credential at {CREDENTIALS}. Create the Bitwarden item dotfiles/tailscale-policy-oauth (an OAuth client with only the policy_file scope), then run workstation-update --refresh-secrets.")
+    if os.name != "nt" and CREDENTIALS.stat().st_mode & 0o077:
+        print(f"Warning: other users can read {CREDENTIALS}. Run: chmod 600 {CREDENTIALS}", file=sys.stderr)
+    values = dict(line.split("=", 1) for line in CREDENTIALS.read_text(encoding="utf-8-sig").splitlines() if "=" in line)
     try:
-        return values["TS_OAUTH_CLIENT_ID"].strip(), values["TS_OAUTH_CLIENT_SECRET"].strip()
+        return unquote(values["TS_OAUTH_CLIENT_ID"]), unquote(values["TS_OAUTH_CLIENT_SECRET"])
     except KeyError as missing:
         die(EXIT_SETUP, f"{CREDENTIALS} lacks {missing.args[0]}")
+
+
+def unquote(value):
+    value = value.strip()
+    return value[1:-1] if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'" else value
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib would resend the Authorization header to wherever a redirect points."""
+
+    def redirect_request(self, *args):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
 
 
 def request(method, url, body=None, headers=None):
     req = urllib.request.Request(url, data=body, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with OPENER.open(req, timeout=30) as resp:
             return resp.status, resp.headers, resp.read().decode()
     except urllib.error.HTTPError as err:
         return err.code, err.headers, err.read().decode()
@@ -58,18 +90,24 @@ def auth_headers():
 
 
 def get_live(auth):
+    """Return (policy, etag), or a message saying why the read failed."""
     status, headers, body = request("GET", ACL, headers={**auth, "Accept": "application/hujson"})
-    return (body, headers["ETag"]) if status == 200 and headers.get("ETag") else None
+    if status == 200 and headers.get("ETag"):
+        return body, headers["ETag"]
+    return f"GET policy returned {status}: {body}"
 
 
 def fetch_live(auth):
-    return get_live(auth) or die(EXIT_SETUP, "GET policy failed")
+    live = get_live(auth)
+    if isinstance(live, str):
+        die(EXIT_SETUP, live)
+    return live
 
 
 def validate(auth, text):
     status, _, body = request("POST", f"{ACL}/validate", text.encode(), {**auth, "Content-Type": "application/hujson"})
     if status == 400:
-        return body
+        return body.strip() or "validate returned 400 with an empty body"
     if status != 200:
         die(EXIT_SETUP, f"validate returned {status}: {body}")
     result = json.loads(body) if body.strip() else {}
@@ -85,18 +123,27 @@ def fingerprint(policy, etag):
 
 
 def require_pulled():
-    if not (BASE.is_file() and ETAG.is_file() and POLICY.is_file()):
+    missing = [path.name for path in (BASE, ETAG, POLICY) if not path.is_file()]
+    if len(missing) == 3:
         die(EXIT_SETUP, "Nothing pulled yet. Run: tspolicy.py pull")
-    return BASE.read_text(), ETAG.read_text().strip(), POLICY.read_text()
+    if missing:
+        die(EXIT_SETUP, f"The local state in {STATE} is incomplete ({', '.join(missing)} missing). Tell the user: a pull would replace policy.hujson.")
+    base = read(BASE)
+    return base, read(ETAG).strip(), same_endings(read(POLICY), base)
+
+
+def has_unconfirmed_edits():
+    return POLICY.is_file() and (not BASE.is_file() or same_endings(read(POLICY), read(BASE)) != read(BASE))
 
 
 def save_state(base, etag, policy):
     STATE.mkdir(parents=True, exist_ok=True)
     STATE.chmod(0o700)
-    for path, text in ((BASE, base), (ETAG, etag), (POLICY, policy)):
-        path.write_text(text)
-        path.chmod(0o600)
     CHECKED.unlink(missing_ok=True)
+    # The etag goes last: a save cut short keeps the old etag, so the next check merges again.
+    for path, text in ((POLICY, policy), (BASE, base), (ETAG, etag)):
+        write(path, text)
+        path.chmod(0o600)
 
 
 def rebase_onto_live(base, policy, live, live_etag):
@@ -107,13 +154,17 @@ def rebase_onto_live(base, policy, live, live_etag):
         sys.exit(0)
     with tempfile.TemporaryDirectory() as tmp:
         mine, old, theirs = (pathlib.Path(tmp, n) for n in ("mine", "old", "theirs"))
-        mine.write_text(policy)
-        old.write_text(base)
-        theirs.write_text(live)
-        merge = subprocess.run(["git", "merge-file", "-p", "-L", "your edit", "-L", "pulled", "-L", "live", mine, old, theirs], capture_output=True, text=True)
-    if merge.returncode < 0 or not merge.stdout:
-        die(EXIT_SETUP, f"git merge-file failed: {merge.stderr}")
-    save_state(live, live_etag, merge.stdout)
+        write(mine, policy)
+        write(old, base)
+        write(theirs, live)
+        try:
+            merge = subprocess.run(["git", "merge-file", "-p", "-L", "your edit", "-L", "pulled", "-L", "live", mine, old, theirs], capture_output=True)
+        except FileNotFoundError:
+            die(EXIT_SETUP, "git is not on the PATH. Install git, then run check: nothing was written.")
+    # git merge-file exits with the number of conflicts, at most 127; more means it failed.
+    if not 0 <= merge.returncode <= 127 or not merge.stdout:
+        die(EXIT_SETUP, f"git merge-file failed: {merge.stderr.decode(errors='replace')}")
+    save_state(live, live_etag, merge.stdout.decode("utf-8"))
     print("The live policy changed since the pull. Someone else's changes:")
     print(diff(base, live, "pulled", "live"))
     conflicts = f" with {merge.returncode} conflict(s) to resolve (marked <<<<<<<)" if merge.returncode else ""
@@ -121,12 +172,16 @@ def rebase_onto_live(base, policy, live, live_etag):
 
 
 def pull(force):
-    if POLICY.is_file() and BASE.is_file() and POLICY.read_text() != BASE.read_text() and not force:
-        die(EXIT_UNPUSHED, f"{POLICY} has unpushed edits. Push them, or pass --force to set them aside.")
+    if has_unconfirmed_edits() and not force:
+        die(EXIT_UNPUSHED, f"{POLICY} has edits not confirmed live. Run check: it reports whether an earlier push landed. Otherwise push them, or pass --force to set them aside.")
     live, etag = fetch_live(auth_headers())
-    if POLICY.is_file() and BASE.is_file() and POLICY.read_text() != BASE.read_text():
-        POLICY.replace(STATE / "policy.hujson.orig")
-        print(f"Set aside unpushed edits in {STATE / 'policy.hujson.orig'}")
+    if has_unconfirmed_edits():
+        aside, n = STATE / "policy.hujson.orig", 1
+        while aside.exists():
+            n += 1
+            aside = STATE / f"policy.hujson.orig{n}"
+        POLICY.replace(aside)
+        print(f"Set aside unpushed edits in {aside}")
     save_state(live, etag, live)
     print(f"Pulled the live policy. Edit {POLICY}")
 
@@ -141,7 +196,7 @@ def check():
     problem = validate(auth, policy)
     if problem:
         die(EXIT_INVALID, f"Validation or tests failed:\n{problem}")
-    CHECKED.write_text(fingerprint(policy, etag))
+    write(CHECKED, fingerprint(policy, etag))
     print("Valid, tests pass, and the live policy is unchanged since the pull.")
 
 
@@ -150,7 +205,7 @@ def push():
     if policy == base:
         print("No edits to push.")
         return
-    if not CHECKED.is_file() or CHECKED.read_text() != fingerprint(policy, etag):
+    if not CHECKED.is_file() or read(CHECKED) != fingerprint(policy, etag):
         die(EXIT_UNCHECKED, "policy.hujson differs from what check last validated. Run check and get the user's approval of its diff.")
     auth = auth_headers()
     status, _, body = request("POST", ACL, policy.encode(), {**auth, "Content-Type": "application/hujson", "Accept": "application/hujson", "If-Match": etag})
@@ -161,19 +216,27 @@ def push():
     if status != 200:
         die(EXIT_SETUP, f"POST policy returned {status}: {body}")
     refreshed = get_live(auth)
-    if refreshed:
+    if isinstance(refreshed, str):
+        print(f"Pushed, but refreshing the local copy failed ({refreshed}). Run check before the next edit.")
+    else:
         save_state(refreshed[0], refreshed[1], refreshed[0])
         print("Pushed. The live policy now matches policy.hujson.")
-    else:
-        print("Pushed, but refreshing the local copy failed. Run check before the next edit.")
 
 
 def main(argv):
     os.umask(0o077)
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8")
     commands = {"pull": lambda: pull("--force" in argv[1:]), "check": check, "push": push}
     if not argv or argv[0] not in commands:
         die(EXIT_SETUP, "usage: tspolicy.py pull [--force] | check | push")
-    commands[argv[0]]()
+    api = urllib.parse.urlsplit(API)
+    if api.scheme != "https" and not (api.scheme == "http" and api.hostname in ("127.0.0.1", "localhost", "::1")):
+        die(EXIT_SETUP, f"TSPOLICY_API must be https, or http to this machine: {API}")
+    try:
+        commands[argv[0]]()
+    except Exception as err:
+        die(EXIT_SETUP, f"Unexpected error: {err!r}. It says nothing about the policy itself. If it came during a push, run check: it reports whether the push landed.")
 
 
 if __name__ == "__main__":
