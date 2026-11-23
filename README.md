@@ -29,6 +29,16 @@ this repository as a submodule source.
   the live policy, validates edits and runs their tests, and pushes only when
   the live policy is unchanged since the pull, so a push never overwrites an
   edit made elsewhere.
+- [`kraken-audit`](skills/kraken-audit/SKILL.md) — audits a whole Kraken tree, or
+  a slice's spec before approval, against Kraken's guidance. Auditors each own a
+  share of the entries, two lenses look for design breaches by their symptoms,
+  and two verifiers judge every candidate. `scripts/` writes the briefs and the
+  report, so the same verdicts give the same report. A code run starts about 27
+  agents and takes about an hour. Only the user invokes it.
+- [`kraken-review`](skills/kraken-review/SKILL.md) — reviews one Kraken change
+  against the same guidance with a fresh reviewer and one verifier.
+  `scripts/change.py` names the change as a git command and refuses to guess a
+  base branch. Only the user invokes it.
 
 ## Tests
 
@@ -36,4 +46,5 @@ this repository as a submodule source.
 bash skills/publish-artifact/scripts/test-publish.sh
 bash skills/herdr-playbook/scripts/test-herdr-playbook.sh
 python3 skills/tailscale-policy/scripts/test_tspolicy.py
+bash skills/kraken-review/scripts/test-change.sh "$(mktemp -d)"
 ```
